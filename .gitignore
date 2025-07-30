@@ -1,0 +1,253 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff
+instance/
+.webassets-cache
+
+# Scrapy stuff
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Logs and temporary files
+*.tmp
+*.temp
+*~
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+.dockerignore
+
+# Deployment secrets and configs
+.env.local
+.env.production
+.env.staging
+*.pem
+*.key
+*.crt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+
+# Package files
+*.pkg
+*.dmg
+*.tar.gz
+*.zip
+
+# GPU/ML specific
+*.ckpt
+*.pth
+*.model
+outputs/
+models/
+checkpoints/
+data/
+datasets/
+
+# Project specific
+orchestrator_*.log
+worker_*.log
+failed_*.log
+recent_*.log
+*.log.[0-9]*
+
+# Main application logs
+orchestrator.log
+worker.log
+
+# API Keys and Credentials
+*.secret
+*.secrets
+*_api_key*
+*_secret_key*
+api_keys.txt
+credentials.json
+credentials.yaml
+.credentials
+.secrets/
+
+# Cloud provider credentials
+.aws/
+.gcp/
+.azure/
+*-credentials.json
+*-service-account.json
+
+# Database dumps and backups
+*.sql
+*.dump
+*.dmp
+database_backup*
+db_dump*
+
+# Temporary downloads (S3, etc.)
+*_s3.log
+*_task_search.log
+*_download.log
+temp_*.log
+tmp_*.log
+
+# SSH and encryption keys
+id_rsa*
+id_ed25519*
+*.ppk
+known_hosts
+authorized_keys
+
+# Configuration files that might contain secrets
+config.json
+config.yaml
+settings.json
+settings.yaml
+local_config*
+prod_config*
+
+# Supabase and RunPod specific
+.supabase/
+runpod_config*
+supabase_config*
+
+# Docker secrets
+docker-compose.override.yml
+docker-compose.prod.yml
+.docker/
+
+# Kubernetes secrets
+k8s-secrets*
+kube-config
+*.kubeconfig
+
+# Backup and sync files
+.sync/
+.backup/
+*_backup_* 

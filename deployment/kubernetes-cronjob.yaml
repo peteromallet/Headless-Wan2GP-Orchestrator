@@ -1,0 +1,129 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: runpod-orchestrator
+  namespace: default
+spec:
+  # Run every 30 seconds (note: K8s minimum is 1 minute, so we run every minute)
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: orchestrator
+            image: your-registry/runpod-orchestrator:latest
+            command: ["python", "-m", "orchestrator.main", "single"]
+            env:
+            - name: MIN_ACTIVE_GPUS
+              value: "2"
+            - name: MAX_ACTIVE_GPUS
+              value: "10"
+            - name: TASKS_PER_GPU_THRESHOLD
+              value: "3"
+            - name: RUNPOD_INSTANCE_TYPE
+              value: "NVIDIA RTX A4000"
+            - name: SUPABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-secrets
+                  key: supabase-url
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-secrets
+                  key: supabase-service-role-key
+            - name: RUNPOD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-secrets
+                  key: runpod-api-key
+            - name: RUNPOD_CONTAINER_IMAGE
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-secrets
+                  key: runpod-container-image
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "250m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          restartPolicy: OnFailure
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orchestrator-secrets
+  namespace: default
+type: Opaque
+data:
+  # Base64 encoded values - use: echo -n "your-value" | base64
+  supabase-url: ""  # Add your base64 encoded Supabase URL
+  supabase-service-role-key: ""  # Add your base64 encoded service role key
+  runpod-api-key: ""  # Add your base64 encoded Runpod API key
+  runpod-container-image: ""  # Add your base64 encoded container image name
+
+---
+# Optional: Deployment for continuous mode
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runpod-orchestrator-continuous
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: runpod-orchestrator
+  template:
+    metadata:
+      labels:
+        app: runpod-orchestrator
+    spec:
+      containers:
+      - name: orchestrator
+        image: your-registry/runpod-orchestrator:latest
+        command: ["python", "-m", "orchestrator.main", "continuous"]
+        env:
+        - name: ORCHESTRATOR_POLL_SEC
+          value: "30"
+        - name: MIN_ACTIVE_GPUS
+          value: "2"
+        - name: MAX_ACTIVE_GPUS
+          value: "10"
+        - name: TASKS_PER_GPU_THRESHOLD
+          value: "3"
+        - name: RUNPOD_INSTANCE_TYPE
+          value: "NVIDIA RTX A4000"
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_ROLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: supabase-service-role-key
+        - name: RUNPOD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: runpod-api-key
+        - name: RUNPOD_CONTAINER_IMAGE
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: runpod-container-image
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m" 

@@ -1,0 +1,64 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: runpod-orchestrator
+  annotations:
+    run.googleapis.com/ingress: private
+spec:
+  template:
+    metadata:
+      annotations:
+        # Minimum instances to keep warm (avoid cold starts)
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cpu-throttling: "false"
+    spec:
+      containerConcurrency: 1
+      timeoutSeconds: 60
+      containers:
+      - image: gcr.io/YOUR_PROJECT/runpod-orchestrator:latest
+        command: ["python", "-m", "orchestrator.main", "single"]
+        resources:
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+        env:
+        - name: MIN_ACTIVE_GPUS
+          value: "2"
+        - name: MAX_ACTIVE_GPUS
+          value: "10"
+        - name: TASKS_PER_GPU_THRESHOLD
+          value: "3"
+        - name: RUNPOD_INSTANCE_TYPE
+          value: "NVIDIA RTX A4000"
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_ROLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: supabase-service-role-key
+        - name: RUNPOD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: runpod-api-key
+        - name: RUNPOD_CONTAINER_IMAGE
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-secrets
+              key: runpod-container-image
+  traffic:
+  - percent: 100
+    latestRevision: true
+
+---
+# Cloud Scheduler job to trigger the orchestrator every 30 seconds
+# Note: This needs to be created via gcloud CLI or console
+# gcloud scheduler jobs create http orchestrator-trigger \
+#   --schedule="*/1 * * * *" \
+#   --uri="https://runpod-orchestrator-HASH-uc.a.run.app" \
+#   --http-method=POST \
+#   --oidc-service-account-email=scheduler@YOUR_PROJECT.iam.gserviceaccount.com 

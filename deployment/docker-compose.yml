@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY}
+      - MIN_ACTIVE_GPUS=${MIN_ACTIVE_GPUS:-2}
+      - MAX_ACTIVE_GPUS=${MAX_ACTIVE_GPUS:-10}
+      - TASKS_PER_GPU_THRESHOLD=${TASKS_PER_GPU_THRESHOLD:-3}
+      - ORCHESTRATOR_POLL_SEC=${ORCHESTRATOR_POLL_SEC:-30}
+      - RUNPOD_INSTANCE_TYPE=${RUNPOD_INSTANCE_TYPE:-NVIDIA RTX A4000}
+      - RUNPOD_CONTAINER_IMAGE=${RUNPOD_CONTAINER_IMAGE}
+    volumes:
+      - ../logs:/app/logs
+    restart: unless-stopped
+    command: ["python", "-m", "orchestrator.main", "continuous"]
+    
+  # Optional: Run a single cycle for testing
+  orchestrator-single:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY}
+      - MIN_ACTIVE_GPUS=${MIN_ACTIVE_GPUS:-2}
+      - MAX_ACTIVE_GPUS=${MAX_ACTIVE_GPUS:-10}
+      - TASKS_PER_GPU_THRESHOLD=${TASKS_PER_GPU_THRESHOLD:-3}
+      - RUNPOD_INSTANCE_TYPE=${RUNPOD_INSTANCE_TYPE:-NVIDIA RTX A4000}
+      - RUNPOD_CONTAINER_IMAGE=${RUNPOD_CONTAINER_IMAGE}
+    profiles:
+      - testing
+    command: ["python", "-m", "orchestrator.main", "single"]
+
+  # Dashboard for monitoring
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    ports:
+      - "8080:8080"
+    profiles:
+      - monitoring
+    command: ["python", "scripts/dashboard.py", "--export"] 
