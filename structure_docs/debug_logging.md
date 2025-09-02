@@ -60,11 +60,11 @@ Failed:                  1
 Success Rate:         96.6%
 ```
 
-### Worker Status Check (`orchestrator.main status`)
+### Worker Status Check (`gpu_orchestrator.main status`)
 Quick status check without dashboard interface.
 
 ```bash
-python -m orchestrator.main status
+python -m gpu_orchestrator.main status
 ```
 
 **Returns:**
@@ -167,10 +167,10 @@ python scripts/fetch_worker_logs.py --check-s3
 - Real-time log following
 
 **Log Locations Checked:**
-- `/workspace/reigh/Headless-Wan2GP/logs/{worker_id}/`
-- `/workspace/reigh/Headless-Wan2GP/logs/`
-- `/workspace/reigh/Headless-Wan2GP/worker.log`
-- `/workspace/reigh/Headless-Wan2GP/headless.log`
+- `/workspace/Headless-Wan2GP/logs/{worker_id}/`
+- `/workspace/Headless-Wan2GP/logs/`
+- `/workspace/Headless-Wan2GP/worker.log`
+- `/workspace/Headless-Wan2GP/worker.log`
 
 ## Database Monitoring
 
@@ -223,7 +223,7 @@ The orchestrator uses structured JSON logging for better analysis.
 export LOG_LEVEL=DEBUG
 
 # Command line
-python -m orchestrator.main --verbose single
+python -m gpu_orchestrator.main --verbose single
 ```
 
 ### Log Format
@@ -231,7 +231,7 @@ python -m orchestrator.main --verbose single
 {
   "timestamp": "2024-01-01T12:00:00Z",
   "level": "INFO",
-  "logger": "orchestrator.control_loop",
+  "logger": "gpu_orchestrator.control_loop",
   "message": "Promoted worker worker-xyz to active",
   "worker_id": "worker-xyz",
   "action": "promote_worker"
@@ -372,7 +372,7 @@ tail -f /var/log/orchestrator.log
 crontab -l
 
 # Test single run
-cd ~/runpod-orchestrator && python -m orchestrator.main single
+cd ~/runpod-orchestrator && python -m gpu_orchestrator.main single
 ```
 
 ### Container Health Checks
@@ -434,10 +434,10 @@ SELECT * FROM worker_performance WHERE success_rate_percent < 90;
 | Purpose | Command |
 |---------|---------|
 | **Real-time Status** | `python scripts/dashboard.py` |
-| **Quick Status** | `python -m orchestrator.main status` |
+| **Quick Status** | `python -m gpu_orchestrator.main status` |
 | **Worker Logs** | `python scripts/fetch_worker_logs.py` |
 | **Manual Spawn** | `python scripts/spawn_gpu.py spawn` |
 | **Emergency Stop** | `python scripts/shutdown_all_workers.py` |
 | **Test DB** | `python scripts/test_supabase.py` |
 | **Test Runpod** | `python scripts/test_runpod.py --quick` |
-| **Single Cycle** | `python -m orchestrator.main single` | 
+| **Single Cycle** | `python -m gpu_orchestrator.main single` | 

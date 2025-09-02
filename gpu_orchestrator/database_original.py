@@ -179,12 +179,22 @@ class DatabaseClient:
             return []
     
     async def get_stuck_tasks(self, timeout_minutes: int = 10) -> List[Dict[str, Any]]:
-        """Get tasks that have been running too long."""
+        """Get tasks that have been running too long (excludes orchestrator tasks)."""
         try:
             cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
             
             result = self.supabase.table('tasks').select('*').eq('status', 'Running').lt('generation_started_at', cutoff_time.isoformat()).execute()
-            return result.data or []
+            
+            if not result.data:
+                return []
+            
+            # Filter out orchestrator tasks since they can legitimately run for extended periods
+            non_orchestrator_tasks = [
+                task for task in result.data 
+                if '_orchestrator' not in task.get('task_type', '').lower()
+            ]
+            
+            return non_orchestrator_tasks
             
         except Exception as e:
             logger.error(f"Failed to get stuck tasks: {e}")

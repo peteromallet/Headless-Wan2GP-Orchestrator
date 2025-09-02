@@ -78,10 +78,10 @@ def _configure_third_party_loggers():
     
     # Keep our orchestrator logs at the configured level
     orchestrator_loggers = [
-        "orchestrator",
-        "orchestrator.control_loop", 
-        "orchestrator.database",
-        "orchestrator.runpod_client",
+        "gpu_orchestrator",
+        "gpu_orchestrator.control_loop", 
+        "gpu_orchestrator.database",
+        "gpu_orchestrator.runpod_client",
         "__main__"
     ]
     

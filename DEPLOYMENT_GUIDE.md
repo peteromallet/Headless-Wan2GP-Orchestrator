@@ -83,7 +83,7 @@ python3 scripts/test_supabase.py
 python3 scripts/test_runpod.py
 
 # Test single orchestrator run
-python3 -m orchestrator.main single
+python3 -m gpu_orchestrator.main single
 ```
 
 #### 5. Set Up Cron (Every 30 Seconds)
@@ -92,8 +92,8 @@ python3 -m orchestrator.main single
 crontab -e
 
 # Add these lines for 30-second intervals:
-* * * * * cd /home/ubuntu/your-orchestrator-repo && python3 -m orchestrator.main single >> /var/log/orchestrator.log 2>&1
-* * * * * sleep 30 && cd /home/ubuntu/your-orchestrator-repo && python3 -m orchestrator.main single >> /var/log/orchestrator.log 2>&1
+* * * * * cd /home/ubuntu/your-orchestrator-repo && python3 -m gpu_orchestrator.main single >> /var/log/orchestrator.log 2>&1
+* * * * * sleep 30 && cd /home/ubuntu/your-orchestrator-repo && python3 -m gpu_orchestrator.main single >> /var/log/orchestrator.log 2>&1
 ```
 
 #### 6. Monitor
@@ -102,7 +102,7 @@ crontab -e
 tail -f /var/log/orchestrator.log
 
 # Check status  
-python3 -m orchestrator.main status
+python3 -m gpu_orchestrator.main status
 
 # Run dashboard
 python3 scripts/dashboard.py

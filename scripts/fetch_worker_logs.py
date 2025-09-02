@@ -37,8 +37,8 @@ load_dotenv()
 # Add project root to Python path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from orchestrator.database import DatabaseClient
-from orchestrator.runpod_client import RunpodClient
+from gpu_orchestrator.database import DatabaseClient
+from gpu_orchestrator.runpod_client import RunpodClient
 
 
 async def check_orchestrator_logs(worker_id: str, lines: int = 100):
@@ -213,17 +213,17 @@ async def check_git_status(ssh_client, worker_id):
     
     git_commands = [
         # Check current branch and status
-        "cd /workspace/reigh/Headless-Wan2GP && git branch -v",
+        "cd /workspace/Headless-Wan2GP && git branch -v",
         # Check last few commits
-        "cd /workspace/reigh/Headless-Wan2GP && git log --oneline -5",
+        "cd /workspace/Headless-Wan2GP && git log --oneline -5",
         # Check if there are uncommitted changes
-        "cd /workspace/reigh/Headless-Wan2GP && git status --porcelain",
+        "cd /workspace/Headless-Wan2GP && git status --porcelain",
         # Check when last git pull happened (from reflog)
-        "cd /workspace/reigh/Headless-Wan2GP && git reflog --grep=pull -5",
+        "cd /workspace/Headless-Wan2GP && git reflog --grep=pull -5",
         # Check if remote origin is set correctly
-        "cd /workspace/reigh/Headless-Wan2GP && git remote -v",
+        "cd /workspace/Headless-Wan2GP && git remote -v",
         # Manual git pull test
-        "cd /workspace/reigh/Headless-Wan2GP && timeout 30 git pull origin main 2>&1"
+        "cd /workspace/Headless-Wan2GP && timeout 30 git pull origin main 2>&1"
     ]
     
     for cmd in git_commands:
@@ -281,7 +281,7 @@ async def fetch_machine_logs(ssh_client, worker_id, lines=50):
         ("Mount Info", "df -h && mount | grep -E '(workspace|tmp|var)' || echo 'Basic mount info'"),
         
         # Check for any Python/worker related logs in standard locations
-        ("Python Logs", f"find /var/log /tmp /root -name '*.log' -exec grep -l -i 'python\\|worker\\|headless' {{}} \\; 2>/dev/null | head -5 || echo 'No Python-related logs'"),
+        ("Python Logs", f"find /var/log /tmp /root -name '*.log' -exec grep -l -i 'python\\|worker' {{}} \\; 2>/dev/null | head -5 || echo 'No Python-related logs'"),
         
         # Check system messages
         ("System Messages", f"tail -n {lines//2} /var/log/messages 2>/dev/null || echo 'No messages log'"),
@@ -377,7 +377,7 @@ async def fetch_direct_ssh_logs(ssh_client, worker_id: str, lines: int = 100) ->
                 print(f"      {line}")
             
             # Try to get the specific worker log
-            worker_log_path = f'/workspace/reigh/Headless-Wan2GP/logs/{worker_id}.log'
+            worker_log_path = f'/workspace/Headless-Wan2GP/logs/{worker_id}.log'
             if worker_log_path in log_files or any(worker_id in log_file for log_file in log_files):
                 print(f"   📄 Reading worker-specific log: {worker_log_path}")
                 exit_code, out, err = ssh_client.execute_command(f'tail -n {lines} {worker_log_path}', timeout=30)
@@ -393,7 +393,7 @@ async def fetch_direct_ssh_logs(ssh_client, worker_id: str, lines: int = 100) ->
                     print(f"   ⚠️  Could not read worker log: {err.strip() if err else 'Unknown error'}")
             
             # Fallback: try general worker.log
-            general_log_path = '/workspace/reigh/Headless-Wan2GP/worker.log'
+            general_log_path = '/workspace/Headless-Wan2GP/worker.log'
             if general_log_path in log_files:
                 print(f"   📄 Checking general worker.log for relevant entries...")
                 exit_code, out, err = ssh_client.execute_command(f'tail -n {lines * 2} {general_log_path} | grep -A 10 -B 10 "{worker_id}" | tail -n {lines}', timeout=30)
@@ -428,18 +428,46 @@ async def fetch_s3_worker_logs(worker_id: str, lines: int = 100) -> bool:
     
     # Set up AWS environment for subprocess calls
     env = os.environ.copy()
+    region = os.getenv('AWS_DEFAULT_REGION', 'eu-ro-1')
     env.update({
         'AWS_ACCESS_KEY_ID': aws_access_key,
         'AWS_SECRET_ACCESS_KEY': aws_secret_key,
-        'AWS_DEFAULT_REGION': 'EU-RO-1'
+        'AWS_DEFAULT_REGION': region
     })
 
     def _download_and_print(s3_path: str) -> bool:
         """Helper to fetch, tail and print a log file from S3."""
         local_log_path = f"./{worker_id}_s3.log"
-        cmd = f"aws s3 cp --endpoint-url https://s3api-eu-ro-1.runpod.io {s3_path} {local_log_path}"
+        
+        # Try aws s3 cp first with explicit region
+        cmd = (
+            f"aws s3 cp --endpoint-url https://s3api-eu-ro-1.runpod.io --region {region} "
+            f"{s3_path} {local_log_path}"
+        )
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, env=env)
-        if res.returncode != 0:
+        
+        # If cp succeeded but file missing, fall back to s3api get-object
+        if res.returncode == 0 and not os.path.exists(local_log_path):
+            print(f"   🔄 s3 cp succeeded but file missing, trying s3api get-object...")
+            # Extract bucket and key from s3 path
+            s3_parts = s3_path.replace('s3://', '').split('/', 1)
+            bucket = s3_parts[0]
+            key = s3_parts[1] if len(s3_parts) > 1 else ''
+            
+            fallback_cmd = (
+                f"aws s3api get-object "
+                f"--endpoint-url https://s3api-eu-ro-1.runpod.io "
+                f"--bucket {bucket} --key {key} {local_log_path} "
+                f"--region {region}"
+            )
+            fallback_res = subprocess.run(fallback_cmd, shell=True, capture_output=True, text=True, timeout=60, env=env)
+            if fallback_res.returncode != 0:
+                print(f"   ⚠️  Fallback get-object failed: {fallback_res.stderr.strip() if fallback_res.stderr else 'Unknown error'}")
+                return False
+            else:
+                print(f"   🔄 Fallback get-object succeeded")
+        
+        elif res.returncode != 0:
             print(f"   ⚠️  S3 download failed: {res.stderr.strip() if res.stderr else 'Unknown error'}")
             return False
         
@@ -466,13 +494,13 @@ async def fetch_s3_worker_logs(worker_id: str, lines: int = 100) -> bool:
                 os.remove(local_log_path)
 
     # 1) try exact path first
-    exact_path = f"s3://m6ccu1lodp/reigh/Headless-Wan2GP/logs/{worker_id}.log"
+    exact_path = f"s3://m6ccu1lodp/Headless-Wan2GP/logs/{worker_id}.log"
     if _download_and_print(exact_path):
         print("   ✅ Exact worker log fetched from S3")
         return True
 
     # 2) wildcard search: any log that contains the worker_id (handles sub-dirs or suffixes)
-    search_cmd = f"aws s3 ls --recursive --endpoint-url https://s3api-eu-ro-1.runpod.io s3://m6ccu1lodp | grep {worker_id} | head -1"
+    search_cmd = f"aws s3 ls --recursive --endpoint-url https://s3api-eu-ro-1.runpod.io --region {region} s3://m6ccu1lodp | grep {worker_id} | head -1"
     search = subprocess.run(search_cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
     if search.returncode == 0 and search.stdout.strip():
         parts = search.stdout.split()
@@ -485,7 +513,7 @@ async def fetch_s3_worker_logs(worker_id: str, lines: int = 100) -> bool:
     # 3) fallback list by date prefix
     date_prefix = worker_id.split('_')[1][:8] if '_' in worker_id else ''
     if date_prefix:
-        list_cmd = f"aws s3 ls --endpoint-url https://s3api-eu-ro-1.runpod.io s3://m6ccu1lodp/reigh/Headless-Wan2GP/logs/ | grep {date_prefix} | head -5"
+        list_cmd = f"aws s3 ls --endpoint-url https://s3api-eu-ro-1.runpod.io --region {region} s3://m6ccu1lodp/Headless-Wan2GP/logs/ | grep {date_prefix} | head -5"
         list_res = subprocess.run(list_cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
         if list_res.returncode == 0 and list_res.stdout.strip():
             print(f"   💡 Other logs from same date ({date_prefix}) that you might inspect:")
@@ -607,9 +635,9 @@ async def fetch_worker_logs(worker_id=None, lines=100, follow=False, output_file
                 
                 # Check for logs in multiple locations including /root/logs/
                 log_locations = [
-                    f"/workspace/reigh/Headless-Wan2GP/logs/{worker_id}.log",
-                    f"/workspace/reigh/Headless-Wan2GP/logs/{worker_id}/",
-                    "/workspace/reigh/Headless-Wan2GP/worker.log",
+                    f"/workspace/Headless-Wan2GP/logs/{worker_id}.log",
+                    f"/workspace/Headless-Wan2GP/logs/{worker_id}/",
+                    "/workspace/Headless-Wan2GP/worker.log",
                     f"/root/logs/{worker_id}.log",  # Add /root/logs/ location
                     "/root/logs/",  # Check /root/logs/ directory
                 ]
@@ -717,12 +745,12 @@ async def fetch_worker_logs(worker_id=None, lines=100, follow=False, output_file
                     # Only show process debugging if we have no logs from any source
                     if not s3_logs_found:
                         print("   🔍 No logs from any source - checking running processes for debugging:")
-                        exit_code, out, err = ssh_client.execute_command('ps aux | grep -E "(python|headless)" | grep -v grep', timeout=10)
+                        exit_code, out, err = ssh_client.execute_command('ps aux | grep -E "(python|worker)" | grep -v grep', timeout=10)
                         if exit_code == 0 and out.strip():
                             for line in out.strip().split('\n'):
                                 print(f"      {line}")
                         else:
-                            print("      No python/headless processes running")
+                            print("      No python/worker processes running")
                     else:
                         print("   💡 S3 logs are available above for this worker")
                 else:
@@ -763,15 +791,16 @@ async def fetch_s3_storage_overview():
     
     # Set up AWS environment for subprocess calls
     env = os.environ.copy()
+    region = os.getenv('AWS_DEFAULT_REGION', 'eu-ro-1')
     env.update({
         'AWS_ACCESS_KEY_ID': aws_access_key,
         'AWS_SECRET_ACCESS_KEY': aws_secret_key,
-        'AWS_DEFAULT_REGION': 'EU-RO-1'
+        'AWS_DEFAULT_REGION': region
     })
     
     try:
         # List recent logs in the logs directory
-        cmd = f"aws s3 ls --endpoint-url https://s3api-eu-ro-1.runpod.io s3://m6ccu1lodp/reigh/Headless-Wan2GP/logs/ | tail -10"
+        cmd = f"aws s3 ls --endpoint-url https://s3api-eu-ro-1.runpod.io --region {region} s3://m6ccu1lodp/Headless-Wan2GP/logs/ | tail -10"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, env=env)
         
         if result.returncode == 0 and result.stdout.strip():

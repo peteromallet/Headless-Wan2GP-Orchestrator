@@ -17,7 +17,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
-from orchestrator.database import DatabaseClient
+from gpu_orchestrator.database import DatabaseClient
 
 def clear_screen():
     """Clear the terminal screen."""

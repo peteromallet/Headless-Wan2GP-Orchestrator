@@ -13,7 +13,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from orchestrator.database import DatabaseClient
+from gpu_orchestrator.database import DatabaseClient
 
 async def create_test_tasks(count: int = 1, task_type: str = "test", project_id: str = None):
     """Create test tasks in the database."""

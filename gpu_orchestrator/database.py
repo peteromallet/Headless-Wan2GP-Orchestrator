@@ -8,7 +8,7 @@ import logging
 import json
 import aiohttp
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -31,7 +31,7 @@ class DatabaseClient:
     # Task operations (minimal - most task management is done by headless workers)
     async def count_available_tasks_via_edge_function(self, include_active: bool = True) -> int:
         """
-        Get available task count using the same edge function that workers use.
+        Get available task count using the new task-counts endpoint.
         This ensures the orchestrator sees exactly the same task count as workers.
         
         Args:
@@ -49,7 +49,7 @@ class DatabaseClient:
                 logger.error("Missing Supabase credentials for edge function call")
                 return 0
             
-            edge_function_url = f"{supabase_url}/functions/v1/claim-next-task"
+            task_counts_url = f"{supabase_url}/functions/v1/task-counts"
             
             headers = {
                 "Authorization": f"Bearer {supabase_key}",
@@ -57,24 +57,70 @@ class DatabaseClient:
             }
             
             payload = {
-                "dry_run": True,
+                "run_type": "gpu",
                 "include_active": include_active
             }
             
             async with aiohttp.ClientSession() as session:
-                async with session.post(edge_function_url, headers=headers, json=payload) as response:
+                async with session.post(task_counts_url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
-                        task_count = data.get("available_tasks", 0)
-                        logger.debug(f"Edge function returned {task_count} available tasks (include_active={include_active})")
+                        # Extract count from new endpoint format
+                        if "totals" in data:
+                            task_count = data["totals"].get("queued_plus_active" if include_active else "queued_only", 0)
+                        else:
+                            task_count = data.get("available_tasks", 0)
+                        logger.debug(f"Task counts endpoint returned {task_count} available tasks (include_active={include_active})")
                         return task_count
                     else:
-                        logger.error(f"Edge function returned status {response.status}: {await response.text()}")
+                        logger.error(f"Task counts endpoint returned status {response.status}: {await response.text()}")
                         return 0
                         
         except Exception as e:
-            logger.error(f"Failed to get task count via edge function: {e}")
+            logger.error(f"Failed to get task count: {e}")
             return 0
+
+    async def get_detailed_task_counts_via_edge_function(self) -> Dict[str, Any]:
+        """
+        Get detailed task count breakdown using the new task-counts endpoint.
+        This provides comprehensive debugging information for scaling decisions.
+        
+        Returns:
+            Dict with detailed task counts and user breakdown, or empty dict on error.
+        """
+        try:
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            
+            if not supabase_url or not supabase_key:
+                logger.error("Missing Supabase credentials for edge function call")
+                return {}
+            
+            task_counts_url = f"{supabase_url}/functions/v1/task-counts"
+            
+            headers = {
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "run_type": "gpu"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(task_counts_url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Task counts endpoint returned detailed breakdown: {data.get('totals', {})}")
+                        return data
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"❌ Task counts endpoint returned status {response.status}: {response_text}")
+                        return {}
+                        
+        except Exception as e:
+            logger.error(f"Failed to get detailed task counts: {e}")
+            return {}
     
     # Note: Task claiming is handled by the edge function at /functions/v1/claim-next-task
     # Workers should use that endpoint instead of calling the database directly
@@ -83,7 +129,9 @@ class DatabaseClient:
     async def get_workers(self, status: List[str] = None) -> List[Dict[str, Any]]:
         """Get workers by status using only database status field."""
         try:
-            query = self.supabase.table('workers').select('*')
+            # Order by created_at DESC to get most recent workers first
+            # This ensures we see active/spawning workers within the 1000 row Supabase limit
+            query = self.supabase.table('workers').select('*').order('created_at', desc=True)
             
             if status:
                 # Filter directly by database status - no mapping needed
@@ -255,19 +303,115 @@ class DatabaseClient:
             return []
     
     async def reset_orphaned_tasks(self, failed_worker_ids: List[str]) -> int:
-        """Reset tasks from failed workers back to queued status."""
+        """Reset tasks from failed workers back to queued status (excludes orchestrator tasks)."""
         try:
             if not failed_worker_ids:
                 return 0
             
-            result = self.supabase.rpc('func_reset_orphaned_tasks', {
-                'failed_worker_ids': failed_worker_ids
-            }).execute()
+            # First, find all tasks from these workers that need to be reset
+            tasks_result = self.supabase.table('tasks').select('id, task_type').eq('status', 'In Progress').in_('worker_id', failed_worker_ids).lt('attempts', 3).execute()
             
-            count = result.data if result.data is not None else 0
-            logger.info(f"Reset {count} orphaned tasks from workers: {failed_worker_ids}")
+            if not tasks_result.data:
+                if len(failed_worker_ids) <= 5:
+                    logger.debug(f"No orphaned tasks found for workers: {failed_worker_ids}")
+                else:
+                    logger.debug(f"No orphaned tasks found for {len(failed_worker_ids)} workers")
+                return 0
+            
+            # Filter out orchestrator tasks
+            non_orchestrator_tasks = [
+                task for task in tasks_result.data 
+                if '_orchestrator' not in task.get('task_type', '').lower()
+            ]
+            
+            orchestrator_tasks_skipped = len(tasks_result.data) - len(non_orchestrator_tasks)
+            
+            if not non_orchestrator_tasks:
+                logger.debug(f"Found {len(tasks_result.data)} orphaned tasks, but all are orchestrator tasks - skipping reset")
+                return 0
+            
+            # Reset the non-orchestrator tasks
+            task_ids = [task['id'] for task in non_orchestrator_tasks]
+            reset_result = self.supabase.table('tasks').update({
+                'status': 'Queued',
+                'worker_id': None,
+                'generation_started_at': None,
+                'generation_processed_at': None,
+                'error_message': 'Reset - orphaned from failed worker'
+            }).in_('id', task_ids).execute()
+            
+            count = len(reset_result.data) if reset_result.data else 0
+            
+            # Logging
+            if count > 0:
+                if len(failed_worker_ids) <= 5:
+                    log_msg = f"Reset {count} orphaned tasks from workers: {failed_worker_ids}"
+                else:
+                    log_msg = f"Reset {count} orphaned tasks from {len(failed_worker_ids)} workers"
+                
+                if orchestrator_tasks_skipped > 0:
+                    log_msg += f" (excluded {orchestrator_tasks_skipped} orchestrator tasks)"
+                
+                logger.info(log_msg)
+            elif failed_worker_ids:
+                # If we checked workers but found no orphaned tasks, log at debug level only
+                if len(failed_worker_ids) <= 5:
+                    logger.debug(f"Checked {len(failed_worker_ids)} workers for orphaned tasks: {failed_worker_ids}")
+                else:
+                    logger.debug(f"Checked {len(failed_worker_ids)} workers for orphaned tasks (list truncated)")
+            
             return count
             
         except Exception as e:
             logger.error(f"Failed to reset orphaned tasks: {e}")
+            return 0
+    
+    async def reset_unassigned_orphaned_tasks(self, timeout_minutes: int = 15) -> int:
+        """Reset tasks stuck in 'In Progress' with no worker_id assigned (excludes orchestrator tasks)."""
+        try:
+            # Find tasks that are in progress but have no worker assigned
+            # and have been stuck for longer than the timeout
+            # EXCLUDE orchestrator tasks since they can legitimately run for extended periods
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+            
+            result = self.supabase.table('tasks').select('id, task_type').eq('status', 'In Progress').is_('worker_id', 'null').lt('generation_started_at', cutoff_time.isoformat()).execute()
+            
+            if not result.data:
+                return 0
+            
+            # Filter out orchestrator tasks
+            non_orchestrator_tasks = [
+                task for task in result.data 
+                if '_orchestrator' not in task.get('task_type', '').lower()
+            ]
+            
+            if not non_orchestrator_tasks:
+                logger.debug(f"Found {len(result.data)} unassigned tasks, but all are orchestrator tasks - skipping reset")
+                return 0
+            
+            task_ids = [task['id'] for task in non_orchestrator_tasks]
+            
+            # Reset these tasks back to Queued status (only if attempts < 3)
+            reset_result = self.supabase.table('tasks').update({
+                'status': 'Queued',
+                'worker_id': None,
+                'generation_started_at': None,
+                'generation_processed_at': None,
+                'error_message': 'Reset - stuck in progress with no worker assigned'
+            }).in_('id', task_ids).lt('attempts', 3).execute()
+            
+            count = len(reset_result.data) if reset_result.data else 0
+            
+            if count > 0:
+                logger.warning(f"Reset {count} unassigned orphaned tasks that were stuck in progress (excluded orchestrator tasks)")
+                # Log task IDs for debugging
+                if count <= 5:
+                    logger.warning(f"Reset unassigned orphaned task IDs: {task_ids}")
+                else:
+                    logger.warning(f"Reset {count} unassigned orphaned tasks (IDs truncated)")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to reset unassigned orphaned tasks: {e}")
             return 0 

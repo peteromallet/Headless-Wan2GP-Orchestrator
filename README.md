@@ -8,7 +8,7 @@ A lightweight service that automatically spawns, monitors, and tears down Runpod
 2. Copy `env.example` to `.env` and fill in your API keys
 3. Install dependencies: `pip install -r requirements.txt`
 4. Set up database schema: `python scripts/setup_database.py`
-5. Run orchestrator: `python -m orchestrator.main single`
+5. Run orchestrator: `python -m gpu_orchestrator.main single`
 
 ## Deployment
 

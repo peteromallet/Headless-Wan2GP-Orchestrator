@@ -14,7 +14,7 @@ from typing import Optional
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from orchestrator.runpod_client import create_runpod_client
+from gpu_orchestrator.runpod_client import create_runpod_client
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

@@ -83,7 +83,7 @@ python scripts/test_supabase.py --create-task
 python scripts/run_worker_local.py
 
 # Run orchestrator in single-cycle mode
-python -m orchestrator.main single
+python -m gpu_orchestrator.main single
 
 # Monitor with dashboard
 python scripts/dashboard.py
@@ -114,7 +114,7 @@ python scripts/dashboard.py
 
 ### Check System Status
 ```bash
-python -m orchestrator.main status
+python -m gpu_orchestrator.main status
 ```
 
 ### Manual Worker Management

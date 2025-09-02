@@ -24,4 +24,4 @@ RUN useradd -m -u 1000 orchestrator
 USER orchestrator
 
 # Default command (can be overridden)
-CMD ["python", "-m", "orchestrator.main", "single"] 
+CMD ["python", "-m", "gpu_orchestrator.main", "single"] 

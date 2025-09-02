@@ -10,7 +10,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from orchestrator.database import DatabaseClient
+from gpu_orchestrator.database import DatabaseClient
 
 def check_tasks():
     """Check existing tasks and their structure."""

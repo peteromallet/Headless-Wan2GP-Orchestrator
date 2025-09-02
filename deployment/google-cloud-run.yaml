@@ -16,7 +16,7 @@ spec:
       timeoutSeconds: 60
       containers:
       - image: gcr.io/YOUR_PROJECT/runpod-orchestrator:latest
-        command: ["python", "-m", "orchestrator.main", "single"]
+        command: ["python", "-m", "gpu_orchestrator.main", "single"]
         resources:
           limits:
             cpu: "1"

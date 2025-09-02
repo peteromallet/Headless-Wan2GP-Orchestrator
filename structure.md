@@ -1,5 +1,10 @@
 # Headless_WGP_Orchestrator: Developer Onboarding Guide
 
+## Quick Start
+```bash
+python -m gpu_orchestrator.main continuous
+```
+
 > **How to Use This Guide**  
 > • Skim the Tech Stack & Directory tables below to orient yourself.  
 > • Need deep-dive implementation details? Follow the links to sub-docs in `structure_docs/` (one file per topic).  
@@ -55,7 +60,7 @@ The orchestrator is **headless** – it exposes no HTTP server by default. All s
 
 | Path | Purpose | Key Files |
 |------|---------|-----------|
-| **`orchestrator/`** | Main orchestration logic | `main.py`, `control_loop.py`, `database.py`, `runpod_client.py`, `logging_config.py` |
+| **`gpu_orchestrator/`** | GPU orchestration logic | `main.py`, `control_loop.py`, `database.py`, `runpod_client.py`, `logging_config.py` |
 | **`scripts/`** | CLI utilities & smoke tests | `spawn_gpu.py`, `shutdown_all_workers.py`, `dashboard.py`, `test_supabase.py` |
 | **`sql/`** | Versioned SQL migrations & views | `*_add_missing_columns.sql`, `*_create_rpc_functions_existing.sql`, ... |
 | **`deployment/`** | Container & infra configs | `Dockerfile`, `docker-compose.yml`, `aws-ecs-task-definition.json`, `kubernetes-cronjob.yaml`, `google-cloud-run.yaml` |
@@ -93,7 +98,7 @@ The orchestration service is intended to be triggered **once every N seconds** (
 
 The actual GPU worker is **[Headless-Wan2GP](https://github.com/peteromallet/Headless-Wan2GP)** - a headless video generation system that runs inside each Runpod container.
 
-* **`headless.py`** – Main worker process that polls Supabase for video generation tasks:
+* **`worker.py`** – Main worker process that polls Supabase for video generation tasks:
   1. `claim_task()` via Supabase RPC `func_claim_available_task`.
   2. Process video generation using Wan2GP models.
   3. Upload generated videos to Supabase storage bucket.
@@ -107,7 +112,7 @@ The actual GPU worker is **[Headless-Wan2GP](https://github.com/peteromallet/Hea
 
 The worker runs inside Runpod containers with:
 ```bash
-python headless.py --main-output-dir ./outputs
+python worker.py --main-output-dir ./outputs
 ```
 
 ### 3.3 Scripts & Tooling (`/scripts`)
@@ -119,11 +124,14 @@ python headless.py --main-output-dir ./outputs
 | `spawn_gpu.py` / `shutdown_all_workers.py` | Manual Runpod control for smoke-tests |
 | `dashboard.py` | CLI dashboard with real-time queue depth & worker status |
 | `test_runpod.py`, `test_supabase.py` | Connectivity / auth sanity checks |
+| `analyze_recent_tasks.py` | **[Debug]** Analyze most recent N tasks regardless of status with timing and distribution patterns |
+| `analyze_task_failures.py` | **[Debug]** Comprehensive failure analysis combining database queries with detailed log analysis |
+| `query_failed_tasks.py` | **[Debug]** Query and analyze patterns in recently failed tasks |
 | `fetch_worker_logs.py` | **[Debug]** Intelligently fetch comprehensive worker logs with real-time progress monitoring, timing analysis, and adaptive method selection |
 | `fetch_task_logs.py` | **[Debug]** Extract task-specific timeline from orchestrator.log with context |
 | `show_termination_config.py` | Display current worker termination timing configuration and logic |
 
-**Debugging:** Use `fetch_worker_logs.py` for worker/infrastructure issues and `fetch_task_logs.py` for task lifecycle analysis. Both handle terminated resources via S3 archives.
+**Debugging:** Use `analyze_recent_tasks.py` for task overview, `analyze_task_failures.py` for comprehensive failure analysis, `fetch_worker_logs.py` for worker/infrastructure issues, and `fetch_task_logs.py` for task lifecycle analysis. All handle terminated resources via S3 archives.
 
 **Progress Monitoring:** The `fetch_worker_logs.py` script intelligently adapts based on worker state and provides comprehensive timing analysis:
 - **Real-time progress**: Shows denoising step completion (e.g., "21/30 – Denoising", "2/8 – Denoising")
@@ -219,6 +227,7 @@ All keys live in `.env` (never commit real secrets). Critical ones:
 | **Scaling** | `MIN_ACTIVE_GPUS` | `2` | Floor for active GPUs (set to 0 for aggressive cost savings) |
 |  | `MAX_ACTIVE_GPUS` | `10` | Hard ceiling |
 |  | `TASKS_PER_GPU_THRESHOLD` | `3` | Trigger scaling when `Queued/Active > threshold` |
+|  | `MACHINES_TO_KEEP_IDLE` | `0` | Number of idle GPUs to keep running for immediate task pickup |
 | **Timeouts (sec)** | `GPU_IDLE_TIMEOUT_SEC` | `300` | Heartbeat expiry for busy queue |
 |  | `TASK_STUCK_TIMEOUT_SEC` | `300` | Detect stuck tasks |
 |  | `SPAWNING_TIMEOUT_SEC` | `300` | Fail slow spawns |
@@ -256,7 +265,7 @@ Task schema and processing details: see [`task_processing.md`](structure_docs/ta
    cp env.example .env      # fill in creds
    pip install -r requirements.txt
    python scripts/setup_database.py   # creates tables & RPC fns
-   python -m orchestrator.main single # dry-run on local machine
+   python -m gpu_orchestrator.main single # dry-run on local machine
    ```
 2. **Run tests & linters**
    ```bash

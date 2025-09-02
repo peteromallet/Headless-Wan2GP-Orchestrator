@@ -26,8 +26,8 @@ load_dotenv()
 sys.path.append(str(Path(__file__).parent.parent))
 
 # Import worker log functionality
-from orchestrator.database import DatabaseClient
-from orchestrator.runpod_client import RunpodClient
+from gpu_orchestrator.database import DatabaseClient
+from gpu_orchestrator.runpod_client import RunpodClient
 
 
 class TaskLogParser:
@@ -183,19 +183,38 @@ def search_s3_logs_for_task(worker_id: str, task_id: str, lines: int = 100) -> D
     
     # Set up AWS environment for subprocess calls
     env = os.environ.copy()
+    region = os.getenv('AWS_DEFAULT_REGION', 'eu-ro-1')
     env.update({
         'AWS_ACCESS_KEY_ID': aws_access_key,
         'AWS_SECRET_ACCESS_KEY': aws_secret_key,
-        'AWS_DEFAULT_REGION': 'EU-RO-1'
+        'AWS_DEFAULT_REGION': region
     })
     
     try:
-        # Download the worker log from S3
+        # Download the worker log from S3 (first try `aws s3 cp`)
         local_log_path = f"./{worker_id}_task_search.log"
-        s3_path = f"s3://m6ccu1lodp/reigh/Headless-Wan2GP/logs/{worker_id}.log"
+        s3_path = f"s3://m6ccu1lodp/Headless-Wan2GP/logs/{worker_id}.log"
         
-        cmd = f"aws s3 cp --endpoint-url https://s3api-eu-ro-1.runpod.io {s3_path} {local_log_path}"
+        # Explicitly set region flag – some AWS CLI builds ignore env when custom endpoint is supplied
+        cmd = (
+            f"aws s3 cp --endpoint-url https://s3api-eu-ro-1.runpod.io --region {region} "
+            f"{s3_path} {local_log_path}"
+        )
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, env=env)
+        
+        # If cp succeeded but file missing, fall back to s3api get-object (works more reliably with custom endpoints)
+        if result.returncode == 0 and not os.path.exists(local_log_path):
+            fallback_cmd = (
+                "aws s3api get-object "
+                "--endpoint-url https://s3api-eu-ro-1.runpod.io "
+                f"--bucket m6ccu1lodp --key Headless-Wan2GP/logs/{worker_id}.log {local_log_path} "
+                f"--region {region}"
+            )
+            fallback_res = subprocess.run(fallback_cmd, shell=True, capture_output=True, text=True, timeout=60, env=env)
+            if fallback_res.returncode != 0:
+                print(f"      ⚠️  Fallback get-object failed: {fallback_res.stderr.strip() if fallback_res.stderr else 'Unknown error'}")
+            else:
+                print(f"      🔄 Fallback get-object succeeded")
         
         if result.returncode != 0:
             print(f"      ⚠️  S3 download failed: {result.stderr.strip() if result.stderr else 'Unknown error'}")
@@ -331,7 +350,7 @@ async def search_specific_worker_logs_for_task(worker_id: str, task_id: str, lin
                 task_worker_logs['search_method'] = 'SSH'
                 
                 # Search worker-specific log file first
-                log_path = f'/workspace/reigh/Headless-Wan2GP/logs/{worker_id}.log'
+                log_path = f'/workspace/Headless-Wan2GP/logs/{worker_id}.log'
                 exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" {log_path}', timeout=30)
                 
                 task_entries = []
@@ -348,7 +367,7 @@ async def search_specific_worker_logs_for_task(worker_id: str, task_id: str, lin
                 
                 # Also try general worker.log
                 if not task_entries:
-                    exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" /workspace/reigh/Headless-Wan2GP/worker.log', timeout=30)
+                    exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" /workspace/Headless-Wan2GP/worker.log', timeout=30)
                     if exit_code == 0 and out.strip():
                         for line in out.strip().split('\n'):
                             if ':' in line:
@@ -438,7 +457,7 @@ async def search_worker_logs_for_task(task_id: str, lines: int = 100) -> Dict[st
                     worker_result['ssh_available'] = True
                     
                     # Search worker-specific log file
-                    log_path = f'/workspace/reigh/Headless-Wan2GP/logs/{worker_id}.log'
+                    log_path = f'/workspace/Headless-Wan2GP/logs/{worker_id}.log'
                     exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" {log_path} | tail -n {lines}', timeout=30)
                     
                     if exit_code == 0 and out.strip():
@@ -457,7 +476,7 @@ async def search_worker_logs_for_task(task_id: str, lines: int = 100) -> Dict[st
                         print(f"      ✅ Found {len(task_entries)} task entries in worker log")
                     else:
                         # Try general worker.log
-                        exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" /workspace/reigh/Headless-Wan2GP/worker.log | tail -n {lines}', timeout=30)
+                        exit_code, out, err = ssh_client.execute_command(f'grep -n "{task_id}" /workspace/Headless-Wan2GP/worker.log | tail -n {lines}', timeout=30)
                         if exit_code == 0 and out.strip():
                             worker_result['logs_found'] = True
                             task_entries = []

@@ -64,11 +64,11 @@ Starts the Headless-Wan2GP worker process in background.
 
 **Command Executed:**
 ```bash
-cd /workspace/reigh/Headless-Wan2GP/ && \
+cd /workspace/Headless-Wan2GP/ && \
 (timeout 30 git pull origin main || echo "Git pull failed, continuing") && \
 source venv/bin/activate && \
 (apt-get update && apt-get install -y python3.10-venv ffmpeg || true) && \
-nohup python headless.py --db-type supabase \
+nohup python worker.py --db-type supabase \
   --supabase-url {supabase_url} \
   --supabase-anon-key {supabase_anon_key} \
   --supabase-access-token {supabase_service_key} \

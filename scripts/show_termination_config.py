@@ -14,6 +14,7 @@ configs = [
     ("ORCHESTRATOR_POLL_SEC", "30", "How often orchestrator checks workers"),
     ("WORKER_GRACE_PERIOD_SEC", "120", "Grace period before idle check"),
     ("GPU_IDLE_TIMEOUT_SEC", "300", "Heartbeat timeout for active workers"),
+    ("GPU_OVERCAPACITY_IDLE_TIMEOUT_SEC", "30", "Idle timeout when over-capacity (faster scale-down)"),
     ("MIN_ACTIVE_GPUS", "2", "Minimum workers to keep running"),
     ("MAX_ACTIVE_GPUS", "10", "Maximum workers allowed"),
     ("TASKS_PER_GPU_THRESHOLD", "3", "Tasks per GPU before scaling up"),

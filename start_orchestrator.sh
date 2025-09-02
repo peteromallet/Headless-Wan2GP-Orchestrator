@@ -8,7 +8,7 @@
 # - Runs in continuous mode
 # - Uses INFO level logging
 
-echo "Starting Orchestrator with automatic log file creation..."
+echo "Starting GPU Orchestrator with automatic log file creation..."
 echo "Logs will be saved to: ./orchestrator.log (rotated at 10MB, 5 backups)"
 echo "JSON format for easy parsing by log aggregation tools"
 echo ""
@@ -23,4 +23,4 @@ export LOG_FORMAT=${LOG_FORMAT:-json}
 export LOG_LEVEL=${LOG_LEVEL:-INFO}
 # LOG_FILE will default to ./orchestrator.log via the logging config
 
-python -m orchestrator.main continuous 
+python -m gpu_orchestrator.main continuous 

@@ -422,14 +422,19 @@ class RunpodClient:
     def start_worker_process(self, runpod_id: str, worker_id: str) -> bool:
         """
         Start the actual worker process in the background.
-        This runs the headless.py script with Supabase configuration.
+        This runs the worker.py script with Supabase configuration.
         """
+        # Ensure environment variables are loaded
+        from dotenv import load_dotenv
+        load_dotenv()
+        
         # Get Supabase credentials from environment
         supabase_url = os.getenv("SUPABASE_URL", "")
         supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "")
         supabase_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
         
         logger.info(f"Starting worker process on {runpod_id} with worker_id: {worker_id}")
+        logger.debug(f"Environment: SUPABASE_URL={supabase_url}, SERVICE_KEY={'***' if supabase_service_key else 'EMPTY'}")
         
         # Create a robust startup script that handles all the steps
         startup_script = f"""#!/bin/bash
@@ -443,7 +448,7 @@ export SUPABASE_SERVICE_ROLE_KEY="{supabase_service_key}"
 export REPLICATE_API_TOKEN="{os.getenv('REPLICATE_API_TOKEN', '')}"
 
 # Change to workspace directory
-cd /workspace/reigh/Headless-Wan2GP/
+cd /workspace/Headless-Wan2GP/
 
 # Create logs directory
 mkdir -p logs
@@ -506,9 +511,9 @@ echo "Virtual env activated: $VIRTUAL_ENV" >> logs/{worker_id}.log 2>&1
 echo "Python path: $(which python)" >> logs/{worker_id}.log 2>&1
 echo "Python version: $(python --version)" >> logs/{worker_id}.log 2>&1
 
-# Verify headless.py exists
+# Verify worker.py exists
 echo "=== CHECKING FILES ===" >> logs/{worker_id}.log 2>&1
-ls -la headless.py >> logs/{worker_id}.log 2>&1
+ls -la worker.py >> logs/{worker_id}.log 2>&1
 
 # Test Python import
 echo "=== TESTING PYTHON ===" >> logs/{worker_id}.log 2>&1
@@ -516,10 +521,10 @@ timeout 10 python -c "import sys; print('Python can start'); print('sys.path:', 
 
 # Start the actual worker process
 echo "=== STARTING MAIN WORKER ===" >> logs/{worker_id}.log 2>&1
-echo "Command: python headless.py --db-type supabase --supabase-url $SUPABASE_URL --supabase-anon-key $SUPABASE_ANON_KEY --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID" >> logs/{worker_id}.log 2>&1
+echo "Command: python worker.py --db-type supabase --supabase-url $SUPABASE_URL --supabase-anon-key $SUPABASE_ANON_KEY --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID" >> logs/{worker_id}.log 2>&1
 
 # Start worker in background
-nohup python headless.py --db-type supabase \\
+nohup python worker.py --db-type supabase \\
   --supabase-url "$SUPABASE_URL" \\
   --supabase-anon-key "$SUPABASE_ANON_KEY" \\
   --supabase-access-token "$SUPABASE_SERVICE_ROLE_KEY" \\

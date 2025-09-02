@@ -96,7 +96,7 @@ fi
 
 # Step 6: Test single orchestrator run
 print_status "Testing orchestrator execution..."
-if python3 -m orchestrator.main single; then
+if python3 -m gpu_orchestrator.main single; then
     print_status "Orchestrator test successful"
 else
     print_warning "Orchestrator test had issues. Check the output above."
@@ -111,11 +111,11 @@ sudo chmod 666 "$LOG_FILE"
 print_status "Setting up cron scheduling..."
 
 # Create cron job content
-CRON_JOB1="* * * * * cd $INSTALL_DIR && python3 -m orchestrator.main single >> $LOG_FILE 2>&1"
-CRON_JOB2="* * * * * sleep 30 && cd $INSTALL_DIR && python3 -m orchestrator.main single >> $LOG_FILE 2>&1"
+CRON_JOB1="* * * * * cd $INSTALL_DIR && python3 -m gpu_orchestrator.main single >> $LOG_FILE 2>&1"
+CRON_JOB2="* * * * * sleep 30 && cd $INSTALL_DIR && python3 -m gpu_orchestrator.main single >> $LOG_FILE 2>&1"
 
 # Check if cron jobs already exist
-if crontab -l 2>/dev/null | grep -q "orchestrator.main"; then
+if crontab -l 2>/dev/null | grep -q "gpu_orchestrator.main"; then
     print_warning "Cron jobs already exist. Skipping cron setup."
 else
     # Add cron jobs
@@ -135,7 +135,7 @@ echo "🎉 Your Runpod GPU Worker Orchestrator is now running!"
 echo ""
 echo "📋 Next steps:"
 echo "  1. Monitor logs: tail -f $LOG_FILE"
-echo "  2. Check status: cd $INSTALL_DIR && python3 -m orchestrator.main status"
+echo "  2. Check status: cd $INSTALL_DIR && python3 -m gpu_orchestrator.main status"
 echo "  3. Run dashboard: cd $INSTALL_DIR && python3 scripts/dashboard.py"
 echo "  4. Create test tasks: cd $INSTALL_DIR && python3 scripts/test_supabase.py --create-task"
 echo ""

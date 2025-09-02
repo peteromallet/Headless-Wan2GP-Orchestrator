@@ -18,7 +18,7 @@ services:
     volumes:
       - ../logs:/app/logs
     restart: unless-stopped
-    command: ["python", "-m", "orchestrator.main", "continuous"]
+    command: ["python", "-m", "gpu_orchestrator.main", "continuous"]
     
   # Optional: Run a single cycle for testing
   orchestrator-single:
@@ -36,7 +36,7 @@ services:
       - RUNPOD_CONTAINER_IMAGE=${RUNPOD_CONTAINER_IMAGE}
     profiles:
       - testing
-    command: ["python", "-m", "orchestrator.main", "single"]
+    command: ["python", "-m", "gpu_orchestrator.main", "single"]
 
   # Dashboard for monitoring
   dashboard:

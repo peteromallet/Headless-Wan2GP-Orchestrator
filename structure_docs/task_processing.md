@@ -135,9 +135,9 @@ When the orchestrator spawns a worker:
 
 **Startup Command:**
 ```bash
-cd /workspace/reigh/Headless-Wan2GP/ && \
+cd /workspace/Headless-Wan2GP/ && \
 source venv/bin/activate && \
-python headless.py --db-type supabase \
+python worker.py --db-type supabase \
   --supabase-url {url} \
   --supabase-access-token {key} \
   --worker {worker_id}

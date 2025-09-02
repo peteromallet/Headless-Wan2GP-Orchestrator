@@ -13,7 +13,7 @@ spec:
           containers:
           - name: orchestrator
             image: your-registry/runpod-orchestrator:latest
-            command: ["python", "-m", "orchestrator.main", "single"]
+            command: ["python", "-m", "gpu_orchestrator.main", "single"]
             env:
             - name: MIN_ACTIVE_GPUS
               value: "2"
@@ -88,7 +88,7 @@ spec:
       containers:
       - name: orchestrator
         image: your-registry/runpod-orchestrator:latest
-        command: ["python", "-m", "orchestrator.main", "continuous"]
+        command: ["python", "-m", "gpu_orchestrator.main", "continuous"]
         env:
         - name: ORCHESTRATOR_POLL_SEC
           value: "30"
