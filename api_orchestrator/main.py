@@ -71,7 +71,7 @@ async def count_tasks(client: httpx.AsyncClient, run_type: Optional[str]) -> Dic
             logger.error("Missing authentication token")
             return {"queued_plus_active": 0, "raw": None}
 
-        payload: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {"include_active": False}
         if run_type:
             payload["run_type"] = run_type
 
@@ -87,7 +87,8 @@ async def count_tasks(client: httpx.AsyncClient, run_type: Optional[str]) -> Dic
         # Assuming it returns the same structure as the old endpoint
         if "totals" in data:
             totals = data["totals"]
-            available_count = int(totals.get("queued_plus_active", 0))
+            # For API workers, only consider queued tasks as claimable
+            available_count = int(totals.get("queued_only", totals.get("queued_plus_active", 0)))
         else:
             # Fallback: look for common count fields
             available_count = int(data.get("queued_plus_active", data.get("available_tasks", 0)))
@@ -163,13 +164,33 @@ async def mark_complete_via_edge_function(client: httpx.AsyncClient, task_id: st
         if output_location:
             payload["output_location"] = output_location
             
+        logger.info(f"Attempting to mark task {task_id} complete via {edge_url}")
+        logger.debug(f"Payload: {payload}")
+        
         resp = await client.post(edge_url, json=payload, headers=headers, timeout=30)
+        
+        # Log response details for debugging
+        logger.info(f"Mark complete response: status={resp.status_code}, headers={dict(resp.headers)}")
+        if resp.status_code != 200:
+            response_text = resp.text
+            logger.error(f"Mark complete failed with status {resp.status_code}: {response_text}")
+            
         resp.raise_for_status()
-        logger.info(f"Task {task_id} marked complete")
+        
+        # Log response body for successful requests too
+        try:
+            response_json = resp.json()
+            logger.info(f"Task {task_id} marked complete successfully: {response_json}")
+        except:
+            logger.info(f"Task {task_id} marked complete (no JSON response)")
+            
         return True
         
     except Exception as exc:
         logger.error(f"Failed to mark task {task_id} complete: {exc}")
+        logger.error(f"Exception type: {type(exc).__name__}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
 
@@ -197,25 +218,53 @@ async def mark_failed_via_edge_function(client: httpx.AsyncClient, task_id: str,
             "output_location": error_message[:500]  # Truncate long error messages
         }
         
+        logger.info(f"Attempting to mark task {task_id} failed via {edge_url}")
+        logger.debug(f"Payload: {payload}")
+        
         resp = await client.post(edge_url, json=payload, headers=headers, timeout=30)
+        
+        # Log response details for debugging
+        logger.info(f"Mark failed response: status={resp.status_code}, headers={dict(resp.headers)}")
+        if resp.status_code != 200:
+            response_text = resp.text
+            logger.error(f"Mark failed failed with status {resp.status_code}: {response_text}")
+            
         resp.raise_for_status()
-        logger.info(f"Task {task_id} marked failed")
+        
+        # Log response body for successful requests too
+        try:
+            response_json = resp.json()
+            logger.info(f"Task {task_id} marked failed successfully: {response_json}")
+        except:
+            logger.info(f"Task {task_id} marked failed (no JSON response)")
+            
         return True
         
     except Exception as exc:
         logger.error(f"Failed to mark task {task_id} as failed: {exc}")
+        logger.error(f"Exception type: {type(exc).__name__}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
 
-async def mark_complete(client: httpx.AsyncClient, task_id: str, result: Dict[str, Any]) -> None:
+async def mark_complete(client: httpx.AsyncClient, task_id: str, result: Dict[str, Any]) -> bool:
     """Mark task complete - wrapper for backward compatibility"""
     output_location = result.get("output_location")
-    await mark_complete_via_edge_function(client, task_id, output_location)
+    success = await mark_complete_via_edge_function(client, task_id, output_location)
+    if not success:
+        logger.error(f"CRITICAL: Failed to mark task {task_id} as complete in database - task may remain stuck!")
+        logger.error(f"Task result that failed to save: {result}")
+    return success
 
 
-async def mark_failed(client: httpx.AsyncClient, task_id: str, error_message: str) -> None:
+async def mark_failed(client: httpx.AsyncClient, task_id: str, error_message: str) -> bool:
     """Mark task failed - wrapper for backward compatibility"""
-    await mark_failed_via_edge_function(client, task_id, error_message)
+    success = await mark_failed_via_edge_function(client, task_id, error_message)
+    if not success:
+        logger.error(f"CRITICAL: Failed to mark task {task_id} as failed in database - task may remain stuck!")
+        logger.error(f"Error message that failed to save: {error_message}")
+    return success
 
 
 async def download_url_content(client: httpx.AsyncClient, url: str) -> bytes:
@@ -710,13 +759,19 @@ async def main_async() -> None:
         task_id = task_payload.get("task_id") or task_payload.get("id")
         try:
             result = await process_api_task(task_payload, client)
-            await mark_complete(client, task_id, result)
+            success = await mark_complete(client, task_id, result)
+            if not success:
+                # If we can't mark the task complete, treat it as a failure to prevent stuck tasks
+                logger.error(f"Task {task_id} processed successfully but failed to save to database")
+                await mark_failed(client, task_id, "Task processed successfully but failed to save completion status to database")
         except Exception as exc:
             logger.error(f"Task {task_id} failed with exception: {exc}")
             logger.error(f"Exception type: {type(exc).__name__}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            await mark_failed(client, task_id, str(exc))
+            failed_success = await mark_failed(client, task_id, str(exc))
+            if not failed_success:
+                logger.error(f"DOUBLE FAILURE: Task {task_id} failed AND could not mark as failed in database!")
 
     async with httpx.AsyncClient(limits=limits, timeout=20.0) as client:
         while True:
