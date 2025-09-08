@@ -41,7 +41,7 @@ set_railway_var() {
     
     if [ -n "$value" ]; then
         echo "Setting $key for $service..."
-        railway variables set "$key=$value" --service "$service" || echo "⚠️  Warning: Could not set $key"
+        railway variables --set "$key=$value" --service "$service" || echo "⚠️  Warning: Could not set $key"
     else
         echo "⚠️  Warning: $key not found in .env file"
     fi

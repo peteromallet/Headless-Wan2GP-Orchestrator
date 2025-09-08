@@ -16,24 +16,17 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
+# Copy requirements from parent directory and install dependencies
+COPY ../requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project (needed for shared modules)
-COPY . .
+# Copy the entire project from parent directory (needed for shared modules)
+COPY .. .
 
 # Create non-root user for security
 RUN useradd -m -u 1000 orchestrator && chown -R orchestrator:orchestrator /app
 USER orchestrator
-
-# Health check for Railway
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD python -c "import sys; sys.path.append('/app'); from gpu_orchestrator.database import DatabaseClient; import asyncio; asyncio.run(DatabaseClient().health_check())" || exit 1
-
-# Expose port for Railway (if needed for health checks)
-EXPOSE 8080
 
 # Default command - runs the GPU orchestrator in continuous mode
 CMD ["python", "-m", "gpu_orchestrator.main", "continuous"]
