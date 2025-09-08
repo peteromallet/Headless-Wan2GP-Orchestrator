@@ -1,8 +1,12 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -24,6 +28,8 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -49,16 +55,17 @@ coverage.xml
 *.mo
 *.pot
 
-# Django stuff
+# Django stuff:
+*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Flask stuff
+# Flask stuff:
 instance/
 .webassets-cache
 
-# Scrapy stuff
+# Scrapy stuff:
 .scrapy
 
 # Sphinx documentation
@@ -78,9 +85,13 @@ ipython_config.py
 .python-version
 
 # pipenv
-Pipfile.lock
+#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
+#   However, in case of collaboration, if having platform-specific dependencies or dependencies
+#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   install all needed dependencies.
+#Pipfile.lock
 
-# PEP 582
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
 __pypackages__/
 
 # Celery stuff
@@ -117,12 +128,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Logs and temporary files
-*.tmp
-*.temp
-*~
-
-# OS Files
+# macOS
 .DS_Store
 .DS_Store?
 ._*
@@ -131,123 +137,21 @@ dmypy.json
 ehthumbs.db
 Thumbs.db
 
-# IDE files
+# Project specific
+orchestrator*.log
+orchestrator.log.*
+failed_tasks.json
+failure_analysis_report_*.md
+*test*.py
+*temp*.py
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Docker
-.dockerignore
-
-# Deployment secrets and configs
-.env.local
-.env.production
-.env.staging
-*.pem
-*.key
-*.crt
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-
-# Backup files
-*.bak
-*.backup
-
-# Package files
-*.pkg
-*.dmg
-*.tar.gz
-*.zip
-
-# GPU/ML specific
-*.ckpt
-*.pth
-*.model
-outputs/
-models/
-checkpoints/
-data/
-datasets/
-
-# Project specific
-orchestrator_*.log
-worker_*.log
-failed_*.log
-recent_*.log
-*.log.[0-9]*
-
-# Main application logs
-orchestrator.log
-worker.log
-
-# API Keys and Credentials
-*.secret
-*.secrets
-*_api_key*
-*_secret_key*
-api_keys.txt
-credentials.json
-credentials.yaml
-.credentials
-.secrets/
-
-# Cloud provider credentials
-.aws/
-.gcp/
-.azure/
-*-credentials.json
-*-service-account.json
-
-# Database dumps and backups
-*.sql
-*.dump
-*.dmp
-database_backup*
-db_dump*
-
-# Temporary downloads (S3, etc.)
-*_s3.log
-*_task_search.log
-*_download.log
-temp_*.log
-tmp_*.log
-
-# SSH and encryption keys
-id_rsa*
-id_ed25519*
-*.ppk
-known_hosts
-authorized_keys
-
-# Configuration files that might contain secrets
-config.json
-config.yaml
-settings.json
-settings.yaml
-local_config*
-prod_config*
-
-# Supabase and RunPod specific
-.supabase/
-runpod_config*
-supabase_config*
-
-# Docker secrets
-docker-compose.override.yml
-docker-compose.prod.yml
-.docker/
-
-# Kubernetes secrets
-k8s-secrets*
-kube-config
-*.kubeconfig
-
-# Backup and sync files
-.sync/
-.backup/
-*_backup_* 
+# Logs
+logs/
+*.log

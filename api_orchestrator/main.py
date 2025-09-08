@@ -570,9 +570,110 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         logger.info(f"Processed {task_type} task via Wavespeed API")
         return result
         
+    elif task_type == "wan_2_2_i2v":
+        # Wavespeed AI WAN 2.2 Image-to-Video
+        logger.info(f"Processing {task_type} task via Wavespeed API")
+        
+        # Extract orchestrator details or use top-level params
+        orchestrator_details = params.get("orchestrator_details", {})
+        effective_params = {**params, **orchestrator_details}
+        
+        # Check if we have LoRAs to determine which endpoint to use
+        additional_loras = effective_params.get("additional_loras", {})
+        has_loras = bool(additional_loras)
+        
+        if has_loras:
+            # Use LoRA endpoint: wan-2.2/i2v-480p-lora
+            endpoint_path = "wavespeed-ai/wan-2.2/i2v-480p-lora"
+            logger.info(f"Using LoRA endpoint: {endpoint_path}")
+            
+            # Map parameters to Wavespeed API format for LoRA endpoint
+            input_images = effective_params.get("input_image_paths_resolved", [])
+            
+            wavespeed_params = {
+                "duration": effective_params.get("duration", 5),
+                "high_noise_loras": [],
+                "image": input_images[0] if input_images else "",
+                "last_image": "",
+                "loras": [],
+                "low_noise_loras": [],
+                "negative_prompt": effective_params.get("negative_prompts_expanded", [""])[0] if effective_params.get("negative_prompts_expanded") else "",
+                "prompt": effective_params.get("base_prompts_expanded", [""])[0] if effective_params.get("base_prompts_expanded") else "",
+                "seed": effective_params.get("seed_base", -1)
+            }
+            
+            # Add last_image if we have multiple input images
+            if len(input_images) > 1:
+                wavespeed_params["last_image"] = input_images[1]
+                logger.info(f"Using first image: {input_images[0]}")
+                logger.info(f"Using last image: {input_images[1]}")
+            else:
+                logger.info(f"Using single image: {input_images[0] if input_images else 'None'}")
+            
+            # Add LoRAs from additional_loras
+            for lora_path, scale in additional_loras.items():
+                wavespeed_params["loras"].append({
+                    "path": lora_path,
+                    "scale": float(scale)
+                })
+            logger.info(f"Added {len(additional_loras)} LoRAs to i2v request")
+            
+        else:
+            # Use non-LoRA endpoint: wan-2.2/i2v-480p
+            endpoint_path = "wavespeed-ai/wan-2.2/i2v-480p"
+            logger.info(f"Using non-LoRA endpoint: {endpoint_path}")
+            
+            # Map parameters to Wavespeed API format for non-LoRA endpoint
+            input_images = effective_params.get("input_image_paths_resolved", [])
+            
+            wavespeed_params = {
+                "seed": effective_params.get("seed_base", -1),
+                "image": input_images[0] if input_images else "",
+                "prompt": effective_params.get("base_prompts_expanded", [""])[0] if effective_params.get("base_prompts_expanded") else "",
+                "duration": effective_params.get("duration", 5),
+                "negative_prompt": effective_params.get("negative_prompts_expanded", [""])[0] if effective_params.get("negative_prompts_expanded") else "",
+                "model_id": "wavespeed-ai/wan-2.2/i2v-480p"
+            }
+            
+            # Set last_image to second input image if available
+            if len(input_images) > 1:
+                wavespeed_params["last_image"] = input_images[1]
+                logger.info(f"Using first image: {input_images[0]}")
+                logger.info(f"Using last image (second input): {input_images[1]}")
+            else:
+                wavespeed_params["last_image"] = ""
+                logger.info(f"Using single image: {input_images[0] if input_images else 'None'}")
+        
+        result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
+        
+        # Download and re-upload to Supabase if we got an external URL
+        if result.get("output_url"):
+            external_url = result["output_url"]
+            logger.info(f"Downloaded external URL, re-uploading to Supabase: {external_url}")
+            
+            try:
+                # Download from external URL and upload to Supabase
+                supabase_url = await download_and_upload_to_supabase(client, task_id, external_url)
+                result["output_location"] = supabase_url
+                
+                # Keep the original URL for reference
+                result["original_external_url"] = external_url
+                
+                logger.info(f"Successfully migrated to Supabase storage: {supabase_url}")
+                
+            except Exception as e:
+                logger.error(f"Failed to migrate {external_url} to Supabase: {e}")
+                # Fallback to original external URL
+                result["output_location"] = external_url
+                result["migration_error"] = str(e)
+                logger.warning(f"Using original external URL as fallback: {external_url}")
+        
+        logger.info(f"Processed {task_type} task via Wavespeed API")
+        return result
+        
     else:
         # Unsupported task type
-        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i'.")
+        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v'.")
 
 
 async def worker_loop(index: int, worker_id: str, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> None:
