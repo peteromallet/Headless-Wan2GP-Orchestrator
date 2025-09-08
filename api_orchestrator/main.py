@@ -15,6 +15,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env at import time so module-level reads work
 load_dotenv()
 
+# Debug: Print environment variables at startup
+print("=== ENVIRONMENT VARIABLES DEBUG ===")
+print(f"SUPABASE_URL: {os.getenv('SUPABASE_URL', 'NOT_SET')}")
+print(f"SUPABASE_SERVICE_ROLE_KEY: {os.getenv('SUPABASE_SERVICE_ROLE_KEY', 'NOT_SET')[:20]}..." if os.getenv('SUPABASE_SERVICE_ROLE_KEY') else "SUPABASE_SERVICE_ROLE_KEY: NOT_SET")
+print(f"API_WORKER_CONCURRENCY: {os.getenv('API_WORKER_CONCURRENCY', 'NOT_SET')}")
+print(f"API_RUN_TYPE: {os.getenv('API_RUN_TYPE', 'NOT_SET')}")
+print("=== END DEBUG ===")
+
 CONCURRENCY = int(os.getenv("API_WORKER_CONCURRENCY", "20"))
 RUN_TYPE = os.getenv("API_RUN_TYPE", "api")  # one of: api|gpu|unset
 PARENT_POLL_SEC = int(os.getenv("API_PARENT_POLL_SEC", "10"))
