@@ -15,13 +15,21 @@ from dotenv import load_dotenv
 # Load environment variables from .env at import time so module-level reads work
 load_dotenv()
 
-# Debug: Print environment variables at startup
-print("=== ENVIRONMENT VARIABLES DEBUG ===")
-print(f"SUPABASE_URL: {os.getenv('SUPABASE_URL', 'NOT_SET')}")
-print(f"SUPABASE_SERVICE_ROLE_KEY: {os.getenv('SUPABASE_SERVICE_ROLE_KEY', 'NOT_SET')[:20]}..." if os.getenv('SUPABASE_SERVICE_ROLE_KEY') else "SUPABASE_SERVICE_ROLE_KEY: NOT_SET")
-print(f"API_WORKER_CONCURRENCY: {os.getenv('API_WORKER_CONCURRENCY', 'NOT_SET')}")
-print(f"API_RUN_TYPE: {os.getenv('API_RUN_TYPE', 'NOT_SET')}")
-print("=== END DEBUG ===")
+# Debug: Print ALL environment variables at startup
+print("=== FULL ENVIRONMENT VARIABLES DEBUG ===")
+print("ALL ENVIRONMENT VARIABLES:")
+for key, value in sorted(os.environ.items()):
+    if 'KEY' in key or 'TOKEN' in key or 'SECRET' in key:
+        print(f"{key}: {value[:10]}..." if value else f"{key}: EMPTY")
+    else:
+        print(f"{key}: {value}")
+print("=== SPECIFIC VARIABLES ===")
+print(f"SUPABASE_URL: '{os.getenv('SUPABASE_URL', 'NOT_SET')}'")
+print(f"SUPABASE_SERVICE_ROLE_KEY exists: {bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY'))}")
+print(f"API_WORKER_CONCURRENCY: '{os.getenv('API_WORKER_CONCURRENCY', 'NOT_SET')}'")
+print(f"API_RUN_TYPE: '{os.getenv('API_RUN_TYPE', 'NOT_SET')}'")
+print(f"RAILWAY_ENVIRONMENT: '{os.getenv('RAILWAY_ENVIRONMENT', 'NOT_SET')}'")
+print("=== END FULL DEBUG ===")
 
 CONCURRENCY = int(os.getenv("API_WORKER_CONCURRENCY", "20"))
 RUN_TYPE = os.getenv("API_RUN_TYPE", "api")  # one of: api|gpu|unset
