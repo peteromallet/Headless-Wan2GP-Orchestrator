@@ -1,4 +1,4 @@
-# GPU Orchestrator Dockerfile - builds from parent context
+# GPU Orchestrator Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
@@ -13,13 +13,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy requirements from parent directory
-COPY ../requirements.txt .
+# Copy requirements file
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy entire project from parent directory
-COPY .. .
+# Copy the entire project
+COPY . .
 
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
