@@ -28,5 +28,23 @@ COPY . .
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
 
-# Default command - Railway will override this via startCommand in railway.json
-CMD ["python", "-c", "print('No start command specified - check railway.json')"]
+# Create a startup script that detects the service type
+COPY <<EOF /app/startup.sh
+#!/bin/bash
+if [ "\$RAILWAY_SERVICE_NAME" = "gpu-orchestrator" ]; then
+    echo "Starting GPU Orchestrator..."
+    exec python -m gpu_orchestrator.main continuous
+elif [ "\$RAILWAY_SERVICE_NAME" = "api-orchestrator" ]; then
+    echo "Starting API Orchestrator..."
+    exec python -m api_orchestrator.main
+else
+    echo "Unknown service: \$RAILWAY_SERVICE_NAME"
+    echo "Available services: api-orchestrator, gpu-orchestrator"
+    exit 1
+fi
+EOF
+
+RUN chmod +x /app/startup.sh
+
+# Use the startup script as the default command
+CMD ["/app/startup.sh"]
