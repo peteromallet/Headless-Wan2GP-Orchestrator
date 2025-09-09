@@ -28,5 +28,5 @@ COPY . .
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
 
-# Default command - will be overridden by Railway's startCommand
-CMD ["echo", "Railway should override this with startCommand"]
+# Default command - Railway will override this via startCommand in railway.json
+CMD ["python", "-c", "print('No start command specified - check railway.json')"]
