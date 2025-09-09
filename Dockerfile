@@ -28,5 +28,5 @@ COPY . .
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
 
-# Default command - can be overridden by Railway
-CMD ["python", "-m", "api_orchestrator.main"]
+# Default command - will be overridden by Railway's startCommand
+CMD ["echo", "Railway should override this with startCommand"]
