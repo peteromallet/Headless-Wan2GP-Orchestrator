@@ -78,8 +78,10 @@ async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, fi
         # Log payload size for debugging
         payload_size = len(str(payload).encode('utf-8'))
         logger.info(f"Total JSON payload size: {payload_size} bytes")
+        logger.info(f"Payload keys being sent: {list(payload.keys())}")
         if first_frame_data:
             logger.info(f"Payload includes first_frame_data of {len(first_frame_data)} chars")
+            logger.info(f"Generated first_frame_filename: {payload.get('first_frame_filename', 'NOT SET!')}")
         
         response = await client.post(edge_url, headers=headers, json=payload, timeout=120)
         
