@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # Configure structured logging before importing internal modules that emit logs
-from .logging_config import setup_logging
+from logging_config import setup_logging
 
 setup_logging()
 
-from .control_loop import OrchestratorControlLoop
+from control_loop import OrchestratorControlLoop
 
 logger = logging.getLogger(__name__)
 

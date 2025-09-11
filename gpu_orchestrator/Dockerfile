@@ -25,4 +25,4 @@ RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
 
 # Run GPU orchestrator specifically
-CMD ["python", "-m", "gpu_orchestrator.main", "continuous"]
+CMD ["python", "main.py", "continuous"]

@@ -11,8 +11,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
-from .database import DatabaseClient
-from .runpod_client import create_runpod_client, spawn_runpod_gpu, terminate_runpod_gpu
+from database import DatabaseClient
+from runpod_client import create_runpod_client, spawn_runpod_gpu, terminate_runpod_gpu
 
 logger = logging.getLogger(__name__)
 
