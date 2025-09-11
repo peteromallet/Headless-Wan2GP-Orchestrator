@@ -15,22 +15,15 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install common Python packages that are likely needed
+# Install dependencies from root requirements (fallback) and orchestrator extras
+COPY ../requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-    httpx \
-    asyncio \
-    python-dotenv \
-    supabase \
-    requests \
-    aiohttp \
-    structlog \
-    python-json-logger
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    pip install --no-cache-dir opencv-python-headless numpy
 
 # Copy the current directory (api_orchestrator)
+# Copy package
 COPY . /app/api_orchestrator/
-
-# Copy main.py to root level for easier execution
-COPY main.py /app/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 apiworker && chown -R apiworker:apiworker /app
