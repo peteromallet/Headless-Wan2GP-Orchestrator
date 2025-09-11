@@ -134,19 +134,14 @@ async def download_and_upload_to_supabase(client: httpx.AsyncClient, task_id: st
         file_data = await download_url_content(client, external_url)
         
         # Check if this is a video file and extract screenshot if requested
-        # Skip screenshot extraction for large files to avoid edge function limits
-        MAX_FILE_SIZE_FOR_SCREENSHOT = 1024 * 1024  # 1MB limit
         first_frame_data = None
         if extract_screenshot and is_video_file(filename):
-            if len(file_data) <= MAX_FILE_SIZE_FOR_SCREENSHOT:
-                logger.info(f"Video detected ({len(file_data)} bytes), extracting first frame screenshot for task {task_id}")
-                screenshot_bytes = extract_first_frame_bytes(file_data)
-                if screenshot_bytes:
-                    # Convert to base64 for inclusion in main upload (matching original approach)
-                    first_frame_data = base64.b64encode(screenshot_bytes).decode('utf-8')
-                    logger.info(f"First frame extracted and will be included in upload")
-            else:
-                logger.info(f"Video file too large ({len(file_data)} bytes > {MAX_FILE_SIZE_FOR_SCREENSHOT}), skipping screenshot extraction to avoid upload limits")
+            logger.info(f"Video detected ({len(file_data)} bytes), extracting first frame screenshot for task {task_id}")
+            screenshot_bytes = extract_first_frame_bytes(file_data)
+            if screenshot_bytes:
+                # Convert to base64 for inclusion in main upload (matching original approach)
+                first_frame_data = base64.b64encode(screenshot_bytes).decode('utf-8')
+                logger.info(f"First frame extracted and will be included in upload")
         
         # Upload to Supabase storage (with first frame data if available)
         supabase_url = await upload_to_supabase_storage(
