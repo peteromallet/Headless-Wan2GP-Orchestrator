@@ -69,6 +69,9 @@ async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, fi
         # Include first frame data if provided (matching original approach)
         if first_frame_data:
             payload["first_frame_data"] = first_frame_data
+            # Generate screenshot filename based on main filename
+            base_name = Path(safe_filename).stem
+            payload["first_frame_filename"] = f"{base_name}_screenshot.png"
         
         logger.info(f"Uploading {len(file_data)} bytes to Supabase storage as {safe_filename}")
         
