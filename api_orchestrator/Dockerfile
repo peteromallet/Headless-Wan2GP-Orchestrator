@@ -15,11 +15,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install common Python packages that are likely needed
-# Install dependencies from root requirements (fallback) and orchestrator extras
-COPY ../requirements.txt /tmp/requirements.txt
+# Install dependencies from local requirements
+COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /tmp/requirements.txt && \
-    pip install --no-cache-dir opencv-python-headless numpy
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Copy the current directory (api_orchestrator)
 # Copy package
