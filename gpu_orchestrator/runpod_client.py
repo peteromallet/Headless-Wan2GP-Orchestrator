@@ -163,33 +163,70 @@ def create_pod_and_wait(api_key: str, gpu_type_id: str, image_name: str, name: s
 def get_pod_ssh_details(pod_id: str, api_key: str):
     """Return SSH connection details (ip, port, password) for a running pod."""
     runpod.api_key = api_key
+    
+    # Try the RunPod SDK first
     try:
         status = runpod.get_pod(pod_id)
+        if status and isinstance(status, dict):
+            runtime = status.get("runtime", {})
+            if runtime and isinstance(runtime, dict):
+                for port_map in runtime.get("ports", []):
+                    if port_map.get("privatePort") == 22:
+                        return {
+                            "ip": port_map.get("ip"),
+                            "port": port_map.get("publicPort"),
+                            "password": runtime.get("sshPassword", "runpod"),
+                        }
     except Exception as e:
-        logger.error(f"Error fetching pod details: {e}")
-        return None
-
-    # Handle None response (pod might be terminated)
-    if status is None:
-        logger.error(f"Pod {pod_id} not found or terminated")
-        return None
+        logger.warning(f"RunPod SDK get_pod failed for {pod_id}: {e}")
     
-    # Ensure status is a dict
-    if not isinstance(status, dict):
-        logger.error(f"Unexpected pod status type for {pod_id}: {type(status)}")
-        return None
-
-    runtime = status.get("runtime", {})
-    if runtime is None:
-        runtime = {}
+    # Fallback to direct GraphQL API call
+    try:
+        import requests
+        headers = {"Authorization": f"Bearer {api_key}"}
+        query = f'''
+        {{
+          pod(input: {{podId: "{pod_id}"}}) {{
+            id
+            desiredStatus
+            runtime {{
+              ports {{
+                ip
+                publicPort
+                privatePort
+                type
+              }}
+            }}
+          }}
+        }}
+        '''
+        
+        response = requests.post('https://api.runpod.io/graphql', 
+                                json={'query': query}, 
+                                headers=headers, 
+                                timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            pod = data.get('data', {}).get('pod')
+            if pod:
+                runtime = pod.get('runtime', {})
+                if runtime:
+                    for port_map in runtime.get('ports', []):
+                        if port_map.get('privatePort') == 22:
+                            return {
+                                "ip": port_map.get("ip"),
+                                "port": port_map.get("publicPort"),
+                                "password": "runpod",  # Default password
+                            }
+        else:
+            logger.warning(f"GraphQL API failed for pod {pod_id}: {response.status_code}")
+            
+    except Exception as e:
+        logger.warning(f"GraphQL fallback failed for pod {pod_id}: {e}")
     
-    for port_map in runtime.get("ports", []):
-        if port_map.get("privatePort") == 22:
-            return {
-                "ip": port_map.get("ip"),
-                "port": port_map.get("publicPort"),
-                "password": runtime.get("sshPassword", "runpod"),
-            }
+    # If both methods fail, log the issue but don't error out completely
+    logger.error(f"Could not get SSH details for pod {pod_id} via SDK or GraphQL API")
     return None
 
 
@@ -206,12 +243,13 @@ class SSHClient:
     """Minimal paramiko wrapper for executing commands over SSH."""
 
     def __init__(self, hostname: str, port: int, username: str, password: str | None = None, 
-                 private_key_path: str | None = None, timeout: int = 10):
+                 private_key_path: str | None = None, private_key_content: str | None = None, timeout: int = 10):
         self.hostname = hostname
         self.port = port
         self.username = username
         self.password = password
         self.private_key_path = private_key_path
+        self.private_key_content = private_key_content
         self.timeout = timeout
         self.client: paramiko.SSHClient | None = None
 
@@ -227,14 +265,38 @@ class SSHClient:
             "look_for_keys": False,
         }
 
-        # Prefer key authentication if a key path is provided and exists
-        if self.private_key_path and os.path.exists(os.path.expanduser(self.private_key_path)):
+        # Try private key from environment variable first (for Railway)
+        if self.private_key_content:
+            try:
+                from io import StringIO
+                # Try Ed25519 first (more common for new keys)
+                try:
+                    pkey = paramiko.Ed25519Key.from_private_key(StringIO(self.private_key_content))
+                except Exception:
+                    # Fallback to RSA
+                    try:
+                        pkey = paramiko.RSAKey.from_private_key(StringIO(self.private_key_content))
+                    except Exception:
+                        # Fallback to other key types
+                        pkey = paramiko.ECDSAKey.from_private_key(StringIO(self.private_key_content))
+                connect_kwargs["pkey"] = pkey
+            except Exception as e:
+                raise RuntimeError(f"Failed to load private key from environment variable: {e}") from e
+        # Fallback to key file if path is provided and exists
+        elif self.private_key_path and os.path.exists(os.path.expanduser(self.private_key_path)):
             expanded_key = os.path.expanduser(self.private_key_path)
             try:
-                pkey = paramiko.RSAKey.from_private_key_file(expanded_key)
+                # Try different key types
+                try:
+                    pkey = paramiko.Ed25519Key.from_private_key_file(expanded_key)
+                except Exception:
+                    try:
+                        pkey = paramiko.RSAKey.from_private_key_file(expanded_key)
+                    except Exception:
+                        pkey = paramiko.ECDSAKey.from_private_key_file(expanded_key)
+                connect_kwargs["pkey"] = pkey
             except Exception as e:
                 raise RuntimeError(f"Failed to load private key {expanded_key}: {e}") from e
-            connect_kwargs["pkey"] = pkey
         else:
             connect_kwargs["password"] = self.password
 
@@ -618,7 +680,17 @@ echo "Worker startup completed successfully"
             logger.error(f"Could not get SSH details for pod {runpod_id}")
             return None
         
-        # Prefer private key if available, fallback to password
+        # Try private key from environment variable first (for Railway)
+        private_key_env = os.getenv("RUNPOD_SSH_PRIVATE_KEY")
+        if private_key_env:
+            return SSHClient(
+                hostname=ssh_details['ip'],
+                port=ssh_details['port'],
+                username='root',
+                private_key_content=private_key_env,
+            )
+        
+        # Fallback to private key file path (for local development)
         if self.ssh_private_key_path and os.path.exists(os.path.expanduser(self.ssh_private_key_path)):
             return SSHClient(
                 hostname=ssh_details['ip'],
@@ -692,10 +764,10 @@ echo "Worker startup completed successfully"
             if desired_status == "RUNNING" and runtime.get("ports"):
                 logger.info(f"Pod {runpod_id} is running, checking SSH access...")
                 
-                # Get SSH details
+                # Get SSH details with better error handling
                 ssh_details = get_pod_ssh_details(runpod_id, self.api_key)
                 
-                if ssh_details:
+                if ssh_details and ssh_details.get('ip') and ssh_details.get('port'):
                     logger.info(f"SSH available for {worker_id}: {ssh_details['ip']}:{ssh_details['port']}")
                     
                     # Worker is ready for start_worker_process()
@@ -705,8 +777,31 @@ echo "Worker startup completed successfully"
                         "ready": True
                     }
                 else:
-                    # Pod is running but no SSH yet
-                    return {"status": "spawning", "message": "Waiting for SSH access"}
+                    # Pod is running but SSH details are incomplete/missing
+                    # Check if we have basic port info from runtime
+                    ssh_port = None
+                    ssh_ip = None
+                    for port_map in runtime.get("ports", []):
+                        if port_map.get("privatePort") == 22:
+                            ssh_ip = port_map.get("ip")
+                            ssh_port = port_map.get("publicPort")
+                            break
+                    
+                    if ssh_ip and ssh_port:
+                        logger.info(f"SSH details found in runtime for {worker_id}: {ssh_ip}:{ssh_port}")
+                        # Use runtime details directly
+                        return {
+                            "status": "active",
+                            "ssh_details": {
+                                "ip": ssh_ip,
+                                "port": ssh_port,
+                                "password": "runpod"
+                            },
+                            "ready": True
+                        }
+                    else:
+                        logger.warning(f"Pod {runpod_id} is running but SSH details incomplete - waiting...")
+                        return {"status": "spawning", "message": "Waiting for complete SSH access"}
                     
             elif desired_status in ["FAILED", "TERMINATED"]:
                 return {"status": "error", "error": f"Pod {desired_status.lower()}"}
