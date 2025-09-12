@@ -21,9 +21,87 @@ from control_loop import OrchestratorControlLoop
 
 logger = logging.getLogger(__name__)
 
+def validate_environment():
+    """Validate all required environment variables are present."""
+    logger.info("🔍 Validating environment configuration...")
+    
+    # Required environment variables
+    required_vars = {
+        'RUNPOD_API_KEY': 'RunPod API key for creating/managing GPU workers',
+        'SUPABASE_URL': 'Supabase database URL',
+        'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key for database access',
+    }
+    
+    # Optional but important environment variables
+    important_vars = {
+        'RUNPOD_SSH_PUBLIC_KEY': 'SSH public key for worker authentication',
+        'RUNPOD_GPU_TYPE': 'GPU type to spawn (e.g., "NVIDIA GeForce RTX 4090")',
+        'RUNPOD_WORKER_IMAGE': 'Docker image for workers',
+        'MAX_ACTIVE_GPUS': 'Maximum number of active GPU workers',
+        'MIN_ACTIVE_GPUS': 'Minimum number of active GPU workers',
+        'GPU_IDLE_TIMEOUT_SEC': 'Timeout before terminating idle workers',
+        'TASKS_PER_GPU_THRESHOLD': 'Number of tasks per GPU for scaling decisions',
+    }
+    
+    # Check required variables
+    missing_required = []
+    for var, description in required_vars.items():
+        value = os.getenv(var)
+        if not value:
+            missing_required.append(f"  ❌ {var}: {description}")
+            logger.error(f"Missing required environment variable: {var}")
+        else:
+            # Show partial value for security (don't log full API keys)
+            if 'KEY' in var or 'SECRET' in var:
+                display_value = f"{value[:10]}..." if len(value) > 10 else "***"
+            else:
+                display_value = value
+            logger.info(f"  ✅ {var}: {display_value}")
+    
+    # Check important variables
+    missing_important = []
+    for var, description in important_vars.items():
+        value = os.getenv(var)
+        if not value:
+            missing_important.append(f"  ⚠️  {var}: {description} (using default)")
+            logger.warning(f"Missing important environment variable: {var} - {description}")
+        else:
+            # Show partial value for security
+            if 'KEY' in var:
+                display_value = f"{value[:20]}..." if len(value) > 20 else value
+            else:
+                display_value = value
+            logger.info(f"  ✅ {var}: {display_value}")
+    
+    # Report results
+    if missing_required:
+        logger.error("❌ CRITICAL: Missing required environment variables:")
+        for msg in missing_required:
+            logger.error(msg)
+        logger.error("🛑 Cannot start orchestrator without required configuration!")
+        return False
+    
+    if missing_important:
+        logger.warning("⚠️  Missing important environment variables (will use defaults):")
+        for msg in missing_important:
+            logger.warning(msg)
+    
+    logger.info("✅ Environment validation completed successfully")
+    return True
+
 async def run_single_cycle():
     """Run a single orchestrator cycle."""
     try:
+        # Validate environment before starting
+        if not validate_environment():
+            error_summary = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": "Missing required environment variables",
+                "success": False
+            }
+            print(json.dumps(error_summary, indent=2))
+            return error_summary
+            
         orchestrator = OrchestratorControlLoop()
         summary = await orchestrator.run_single_cycle()
         
@@ -45,6 +123,12 @@ async def run_single_cycle():
 async def run_continuous_loop():
     """Run orchestrator in continuous loop mode."""
     load_dotenv()
+    
+    # Validate environment before starting continuous loop
+    if not validate_environment():
+        logger.error("🛑 Cannot start continuous loop without required configuration!")
+        sys.exit(1)
+    
     poll_interval = int(os.getenv("ORCHESTRATOR_POLL_SEC", "30"))
     
     logger.info(f"Starting orchestrator in continuous mode (polling every {poll_interval}s)")

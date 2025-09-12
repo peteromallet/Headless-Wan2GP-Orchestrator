@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import json
 import logging
@@ -394,32 +395,75 @@ async def worker_loop(index: int, worker_id: str, client: httpx.AsyncClient, sem
         await asyncio.sleep(1)
 
 
+def validate_api_environment():
+    """Validate all required environment variables for API orchestrator."""
+    logger.info("🔍 [STARTUP] Validating API orchestrator environment...")
+    
+    # Required environment variables
+    required_vars = {
+        'SUPABASE_URL': 'Supabase database URL for task management',
+        'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key for database access',
+        'WAVESPEED_API_KEY': 'Wavespeed API key for processing tasks',
+    }
+    
+    # Optional but important environment variables
+    important_vars = {
+        'API_WORKER_ID': 'Unique identifier for this API worker instance',
+        'CONCURRENCY': 'Number of concurrent tasks to process',
+        'RUN_TYPE': 'Type of tasks to process (cloud/local)',
+        'PARENT_POLL_SEC': 'Polling interval for task checking',
+        'LOG_LEVEL': 'Logging level (DEBUG/INFO/WARNING/ERROR)',
+    }
+    
+    # Check required variables
+    missing_required = []
+    for var, description in required_vars.items():
+        value = os.getenv(var)
+        if not value:
+            missing_required.append(f"  ❌ {var}: {description}")
+            logger.error(f"[STARTUP] Missing required environment variable: {var}")
+        else:
+            # Show partial value for security
+            if 'KEY' in var or 'SECRET' in var:
+                display_value = f"{value[:10]}..." if len(value) > 10 else "***"
+            else:
+                display_value = value
+            logger.info(f"[STARTUP]   ✅ {var}: {display_value}")
+    
+    # Check important variables
+    for var, description in important_vars.items():
+        value = os.getenv(var)
+        if not value:
+            logger.warning(f"[STARTUP]   ⚠️  {var}: {description} (using default)")
+        else:
+            logger.info(f"[STARTUP]   ✅ {var}: {value}")
+    
+    # Report results
+    if missing_required:
+        logger.error("[STARTUP] ❌ CRITICAL: Missing required environment variables:")
+        for msg in missing_required:
+            logger.error(f"[STARTUP] {msg}")
+        logger.error("[STARTUP] 🛑 Cannot start API orchestrator without required configuration!")
+        return False
+    
+    logger.info("[STARTUP] ✅ Environment validation completed successfully")
+    return True
+
 async def main_async() -> None:
     # Minimal logging setup
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     
-    # Log startup configuration for debugging
     logger.info(f"[STARTUP] API Orchestrator starting...")
+    
+    # Validate environment before proceeding
+    if not validate_api_environment():
+        logger.error("[STARTUP] 🛑 Exiting due to missing required configuration!")
+        sys.exit(1)
+    
+    # Log additional startup configuration
     logger.info(f"[STARTUP] CONCURRENCY: {CONCURRENCY}")
     logger.info(f"[STARTUP] RUN_TYPE: {RUN_TYPE}")
     logger.info(f"[STARTUP] PARENT_POLL_SEC: {PARENT_POLL_SEC}")
-    logger.info(f"[STARTUP] LOG_LEVEL: {os.getenv('LOG_LEVEL', 'INFO')}")
-    
-    # Check critical environment variables
-    supabase_url = os.getenv("SUPABASE_URL", "")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    wavespeed_key = os.getenv("WAVESPEED_API_KEY", "")
-    
-    logger.info(f"[STARTUP] SUPABASE_URL: {'SET' if supabase_url else 'MISSING'}")
-    logger.info(f"[STARTUP] SUPABASE_SERVICE_ROLE_KEY: {'SET' if supabase_key else 'MISSING'}")
-    logger.info(f"[STARTUP] WAVESPEED_API_KEY: {'SET' if wavespeed_key else 'MISSING'}")
-    
-    if not supabase_url:
-        logger.error("[STARTUP] CRITICAL: SUPABASE_URL not configured!")
-    if not supabase_key:
-        logger.error("[STARTUP] CRITICAL: SUPABASE_SERVICE_ROLE_KEY not configured!")
-    if not wavespeed_key:
-        logger.error("[STARTUP] CRITICAL: WAVESPEED_API_KEY not configured!")
 
     worker_id = os.getenv("API_WORKER_ID", "api-worker-main")
     limits = httpx.Limits(max_connections=max(64, CONCURRENCY * 4), max_keepalive_connections=max(32, CONCURRENCY * 2))
