@@ -35,8 +35,12 @@ def validate_environment():
     # Optional but important environment variables
     important_vars = {
         'RUNPOD_SSH_PUBLIC_KEY': 'SSH public key for worker authentication',
+        'RUNPOD_STORAGE_NAME': 'RunPod storage volume name (e.g., "Peter")',
         'RUNPOD_GPU_TYPE': 'GPU type to spawn (e.g., "NVIDIA GeForce RTX 4090")',
         'RUNPOD_WORKER_IMAGE': 'Docker image for workers',
+        'RUNPOD_VOLUME_MOUNT_PATH': 'Volume mount path in containers',
+        'RUNPOD_DISK_SIZE_GB': 'Disk size in GB for workers',
+        'RUNPOD_CONTAINER_DISK_GB': 'Container disk size in GB',
         'MAX_ACTIVE_GPUS': 'Maximum number of active GPU workers',
         'MIN_ACTIVE_GPUS': 'Minimum number of active GPU workers',
         'GPU_IDLE_TIMEOUT_SEC': 'Timeout before terminating idle workers',
