@@ -45,6 +45,11 @@ class OrchestratorControlLoop:
         self.scale_down_multiplier = float(os.getenv("SCALE_DOWN_MULTIPLIER", "0.9"))
         self.min_scaling_interval = int(os.getenv("MIN_SCALING_INTERVAL_SEC", "45"))
         
+        # Failure rate protection (prevent endless spin-ups)
+        self.max_failure_rate = float(os.getenv("MAX_WORKER_FAILURE_RATE", "0.8"))  # 80% failure rate threshold
+        self.failure_window_minutes = int(os.getenv("FAILURE_WINDOW_MINUTES", "30"))  # Look at last 30 minutes
+        self.min_workers_for_rate_check = int(os.getenv("MIN_WORKERS_FOR_RATE_CHECK", "5"))  # Need at least 5 workers to calculate rate
+        
         # Validate and clamp machines_to_keep_idle
         if self.machines_to_keep_idle < 0:
             logger.warning(f"MACHINES_TO_KEEP_IDLE cannot be negative, setting to 0")
@@ -489,6 +494,9 @@ class OrchestratorControlLoop:
             desired_workers = max(self.min_active_gpus, task_based_workers, buffer_based_workers)
             desired_workers = min(desired_workers, self.max_active_gpus)
             
+            # Check failure rate before scaling up to prevent endless spin-ups
+            failure_rate_ok = await self._check_worker_failure_rate()
+            
             # Enhanced logging for scaling decision analysis
             logger.info(f"🎯 SCALING DECISION ANALYSIS:")
             logger.info(f"   • Task-based scaling (queued + active): {task_based_workers} workers")
@@ -499,6 +507,7 @@ class OrchestratorControlLoop:
             logger.info(f"   • Minimum requirement: {self.min_active_gpus} workers")
             logger.info(f"   → FINAL DESIRED: {desired_workers} workers")
             logger.info(f"   • Current capacity: {len(idle_workers)} idle + {busy_workers_count} busy = {len(active_workers)} active, {len(spawning_workers)} spawning")
+            logger.info(f"   • Failure rate check: {'✅ PASS' if failure_rate_ok else '❌ FAIL (blocking scale-up)'}")
 
             # Dynamic idle timeout: use short timeout when over-capacity
             if total_workers > desired_workers:
@@ -553,11 +562,15 @@ class OrchestratorControlLoop:
                 workers_needed = desired_workers - effective_capacity
                 workers_needed = min(workers_needed, self.max_active_gpus - (active_count + spawning_count))
                 
-                logger.info(f"Scaling up: need {workers_needed} more workers (current: {effective_capacity}, desired: {desired_workers})")
-                
-                for _ in range(workers_needed):
-                    if await self._spawn_worker():
-                        summary["actions"]["workers_spawned"] += 1
+                if not failure_rate_ok:
+                    logger.error(f"⚠️  SCALING BLOCKED: High failure rate detected, not spawning {workers_needed} workers")
+                    logger.error(f"⚠️  Fix the underlying issue (SSH auth, image problems, etc.) before scaling resumes")
+                else:
+                    logger.info(f"Scaling up: need {workers_needed} more workers (current: {effective_capacity}, desired: {desired_workers})")
+                    
+                    for _ in range(workers_needed):
+                        if await self._spawn_worker():
+                            summary["actions"]["workers_spawned"] += 1
             
             # 7. Update summary with final status
             summary["status"] = {
@@ -831,6 +844,49 @@ class OrchestratorControlLoop:
         except Exception as e:
             logger.warning(f"Error parsing timestamp {timestamp_str}: {e}")
             return False  # Assume not past timeout if we can't parse
+    
+    async def _check_worker_failure_rate(self) -> bool:
+        """
+        Check if the worker failure rate is too high, indicating a systemic issue.
+        Returns True if failure rate is acceptable, False if too high.
+        """
+        try:
+            # Get workers from the last failure_window_minutes
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=self.failure_window_minutes)
+            
+            recent_workers = []
+            workers = await self.db.get_workers(['spawning', 'active', 'terminating', 'error', 'terminated'])
+            
+            for worker in workers:
+                worker_time = worker.get('updated_at', worker.get('created_at'))
+                if worker_time:
+                    try:
+                        worker_dt = datetime.fromisoformat(worker_time.replace('Z', '+00:00'))
+                        if worker_dt > cutoff_time:
+                            recent_workers.append(worker)
+                    except Exception:
+                        pass
+            
+            if len(recent_workers) < self.min_workers_for_rate_check:
+                # Not enough workers to calculate meaningful failure rate
+                return True
+            
+            failed_workers = [w for w in recent_workers if w['status'] in ['error', 'terminated']]
+            failure_rate = len(failed_workers) / len(recent_workers)
+            
+            logger.info(f"[FAILURE_RATE] Recent workers: {len(recent_workers)}, Failed: {len(failed_workers)}, Rate: {failure_rate:.2%}")
+            
+            if failure_rate > self.max_failure_rate:
+                logger.error(f"[FAILURE_RATE] CRITICAL: Worker failure rate ({failure_rate:.2%}) exceeds threshold ({self.max_failure_rate:.2%})")
+                logger.error(f"[FAILURE_RATE] This indicates a systemic issue (SSH auth, image problems, etc.)")
+                logger.error(f"[FAILURE_RATE] Stopping new worker spawning to prevent endless spin-ups")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking worker failure rate: {e}")
+            return True  # Default to allowing spawning if we can't check
     
     async def _check_recent_task_completions(self, worker_id: str) -> int:
         """Check how many tasks this worker completed since the last cycle (30 seconds)."""

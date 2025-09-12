@@ -328,8 +328,16 @@ class RunpodClient:
         return self._gpu_type_info
     
     def _get_public_key_content(self) -> Optional[str]:
-        """Read SSH public key content if path is configured."""
+        """Get SSH public key content from environment variable or file path."""
+        # First try to get from environment variable (for Railway deployment)
+        public_key_env = os.getenv("RUNPOD_SSH_PUBLIC_KEY")
+        if public_key_env:
+            logger.debug("Using SSH public key from RUNPOD_SSH_PUBLIC_KEY environment variable")
+            return public_key_env.strip()
+        
+        # Fallback to file path (for local development)
         if not self.ssh_public_key_path:
+            logger.warning("No SSH public key configured. Set RUNPOD_SSH_PUBLIC_KEY environment variable or RUNPOD_SSH_PUBLIC_KEY_PATH")
             return None
             
         pub_path = os.path.expanduser(self.ssh_public_key_path)
@@ -339,6 +347,7 @@ class RunpodClient:
             
         try:
             with open(pub_path, "r", encoding="utf-8") as f:
+                logger.debug(f"Using SSH public key from file: {pub_path}")
                 return f.read().strip()
         except Exception as e:
             logger.error(f"Error reading SSH public key: {e}")
