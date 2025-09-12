@@ -332,7 +332,8 @@ class RunpodClient:
         # First try to get from environment variable (for Railway deployment)
         public_key_env = os.getenv("RUNPOD_SSH_PUBLIC_KEY")
         if public_key_env:
-            logger.debug("Using SSH public key from RUNPOD_SSH_PUBLIC_KEY environment variable")
+            logger.info(f"[SSH_DEBUG] Using SSH public key from RUNPOD_SSH_PUBLIC_KEY environment variable")
+            logger.info(f"[SSH_DEBUG] Key preview: {public_key_env[:50]}...{public_key_env[-20:]}")
             return public_key_env.strip()
         
         # Fallback to file path (for local development)
@@ -377,6 +378,10 @@ class RunpodClient:
         
         # Get public key content for injection (like user's example)
         public_key_content = self._get_public_key_content()
+        if public_key_content:
+            logger.info(f"[SSH_DEBUG] Will inject SSH public key into worker {worker_id}")
+        else:
+            logger.error(f"[SSH_DEBUG] No SSH public key available for worker {worker_id} - authentication will fail!")
         
         try:
             logger.info(f"Creating worker pod: {worker_id}")
