@@ -38,26 +38,39 @@ async def count_tasks(client: httpx.AsyncClient, run_type: Optional[str]) -> Dic
         supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         task_counts_url = f"{supabase_url}/functions/v1/task-counts"
         
+        logger.debug(f"[TASK_COUNT] Counting tasks with run_type: {run_type}")
+        logger.debug(f"[TASK_COUNT] URL: {task_counts_url}")
+        
         if not supabase_url:
-            logger.error("SUPABASE_URL not configured")
+            logger.error("[TASK_COUNT] SUPABASE_URL not configured")
             return {"queued_plus_active": 0, "raw": None}
         
         headers = _auth_headers()
         if not headers["Authorization"]:
-            logger.error("Missing authentication token")
+            logger.error("[TASK_COUNT] Missing authentication token")
             return {"queued_plus_active": 0, "raw": None}
 
         payload: Dict[str, Any] = {"include_active": False}
         if run_type:
             payload["run_type"] = run_type
 
+        logger.debug(f"[TASK_COUNT] Sending request with payload: {payload}")
+
         resp = await client.post(task_counts_url, headers=headers, json=payload, timeout=15)
         
+        logger.debug(f"[TASK_COUNT] Response status: {resp.status_code}")
+        
         if resp.status_code != 200:
-            logger.warning(f"Task counts failed with status {resp.status_code}")
+            logger.warning(f"[TASK_COUNT] Task counts failed with status {resp.status_code}")
+            try:
+                error_text = resp.text
+                logger.error(f"[TASK_COUNT] Error response: {error_text}")
+            except:
+                pass
             return {"queued_plus_active": 0, "raw": None}
             
         data = resp.json()
+        logger.debug(f"[TASK_COUNT] Raw response data: {data}")
         
         # Extract the counts from the new endpoint format
         # Assuming it returns the same structure as the old endpoint
@@ -65,11 +78,13 @@ async def count_tasks(client: httpx.AsyncClient, run_type: Optional[str]) -> Dic
             totals = data["totals"]
             # For API workers, only consider queued tasks as claimable
             available_count = int(totals.get("queued_only", totals.get("queued_plus_active", 0)))
+            logger.debug(f"[TASK_COUNT] Using totals.queued_only: {available_count}")
         else:
             # Fallback: look for common count fields
             available_count = int(data.get("queued_plus_active", data.get("available_tasks", 0)))
+            logger.debug(f"[TASK_COUNT] Using fallback count: {available_count}")
         
-        logger.info(f"Available tasks: {available_count}")
+        logger.info(f"[TASK_COUNT] Available tasks: {available_count}")
         return {"queued_plus_active": available_count, "raw": data}
         
     except Exception as e:
@@ -84,10 +99,16 @@ async def claim_next_task(client: httpx.AsyncClient, worker_id: str, run_type: O
     """Claim the next available task for processing."""
     urls = _get_supabase_edge_urls()
     headers = _auth_headers()
+    
+    # Enhanced logging for debugging
+    logger.debug(f"[TASK_CLAIM] Worker {worker_id} attempting to claim task with run_type: {run_type}")
+    logger.debug(f"[TASK_CLAIM] URLs: {urls}")
+    logger.debug(f"[TASK_CLAIM] Has auth header: {bool(headers.get('Authorization'))}")
+    
     if not urls["claim"] or not headers["Authorization"]:
         global _missing_env_logged
         if not _missing_env_logged:
-            logger.error("Missing SUPABASE_URL or token; cannot claim tasks")
+            logger.error(f"[TASK_CLAIM] Missing SUPABASE_URL or token; cannot claim tasks. URLs: {urls}, Auth: {bool(headers.get('Authorization'))}")
             _missing_env_logged = True
         await asyncio.sleep(1)
         return None
@@ -95,23 +116,31 @@ async def claim_next_task(client: httpx.AsyncClient, worker_id: str, run_type: O
     payload: Dict[str, Any] = {"worker_id": worker_id}
     if run_type:
         payload["run_type"] = run_type
+    
+    logger.debug(f"[TASK_CLAIM] Sending claim request with payload: {payload}")
+    
     try:
         resp = await client.post(urls["claim"], headers=headers, json=payload, timeout=15)
         
+        logger.debug(f"[TASK_CLAIM] Response status: {resp.status_code}")
+        
         if resp.status_code == 204:
-            logger.debug("No tasks available to claim (204)")
+            logger.info(f"[TASK_CLAIM] Worker {worker_id}: No tasks available to claim (204)")
             return None
             
         resp.raise_for_status()
         data = resp.json()
-        logger.info(f"Claimed task: {data.get('task_id')} ({data.get('task_type')})")
+        logger.info(f"[TASK_CLAIM] Worker {worker_id}: Successfully claimed task: {data.get('task_id')} ({data.get('task_type')})")
+        logger.debug(f"[TASK_CLAIM] Full task data: {data}")
         
         # No task type filtering - process any task with matching run_type
         # The run_type filtering is handled by the edge function
             
         return data
     except Exception as exc:
-        logger.warning(f"Claim failed: {exc}")
+        logger.error(f"[TASK_CLAIM] Worker {worker_id}: Claim failed with error: {exc}")
+        if hasattr(exc, 'response') and hasattr(exc.response, 'text'):
+            logger.error(f"[TASK_CLAIM] Response body: {exc.response.text}")
         await asyncio.sleep(0.5)
         return None
 
