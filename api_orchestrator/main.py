@@ -21,7 +21,7 @@ from .video_utils import download_video_to_temp, remove_last_frame_from_video, j
 load_dotenv()
 
 CONCURRENCY = int(os.getenv("API_WORKER_CONCURRENCY", "20"))
-RUN_TYPE = os.getenv("API_RUN_TYPE", "api")  # one of: api|gpu|unset
+RUN_TYPE = "gpu"  # Hardcoded for GPU workers - they process GPU tasks
 PARENT_POLL_SEC = int(os.getenv("API_PARENT_POLL_SEC", "10"))
 
 
