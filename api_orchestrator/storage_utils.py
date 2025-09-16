@@ -35,6 +35,7 @@ async def download_url_content(client: httpx.AsyncClient, url: str) -> bytes:
 async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str, first_frame_data: str = None) -> str:
     """
     Upload file data to Supabase storage via the complete-task Edge Function.
+    This function also marks the task as complete in the database.
     Returns the public URL of the uploaded file.
     """
     try:
@@ -185,6 +186,9 @@ async def process_external_url_result(client: httpx.AsyncClient, task_id: str, r
         # Add screenshot URL if extracted
         if "screenshot_url" in upload_result:
             result["screenshot_url"] = upload_result["screenshot_url"]
+        
+        # Mark that task completion was handled by the upload
+        result["_task_completed_by_upload"] = True
         
         logger.info(f"Successfully processed external URL for task {task_id}")
         

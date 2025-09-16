@@ -280,7 +280,8 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
                         "output_location": public_url,
                         "output_url": public_url,
                         "segments_processed": num_segments,
-                        "message": f"Successfully processed {num_segments} transitions into joined video"
+                        "message": f"Successfully processed {num_segments} transitions into joined video",
+                        "_task_completed_by_upload": True
                     }
                 else:
                     # Degenerate case; return the only segment after uploading
@@ -304,7 +305,8 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
                         "output_location": public_url,
                         "output_url": public_url,
                         "segments_processed": 1,
-                        "message": "Single transition processed"
+                        "message": "Single transition processed",
+                        "_task_completed_by_upload": True
                     }
 
             except Exception as e:
@@ -473,11 +475,17 @@ async def main_async() -> None:
         task_id = task_payload.get("task_id") or task_payload.get("id")
         try:
             result = await process_api_task(task_payload, client)
-            success = await mark_complete(client, task_id, result)
-            if not success:
-                # If we can't mark the task complete, treat it as a failure to prevent stuck tasks
-                logger.error(f"Task {task_id} processed successfully but failed to save to database")
-                await mark_failed(client, task_id, "Task processed successfully but failed to save completion status to database")
+            
+            # Check if task completion was already handled by the upload process
+            if result.get("_task_completed_by_upload"):
+                logger.info(f"Task {task_id} completion already handled by upload process, skipping additional mark_complete call")
+            else:
+                # Only call mark_complete if the upload process didn't handle it
+                success = await mark_complete(client, task_id, result)
+                if not success:
+                    # If we can't mark the task complete, treat it as a failure to prevent stuck tasks
+                    logger.error(f"Task {task_id} processed successfully but failed to save to database")
+                    await mark_failed(client, task_id, "Task processed successfully but failed to save completion status to database")
         except Exception as exc:
             logger.error(f"Task {task_id} failed with exception: {exc}")
             logger.error(f"Exception type: {type(exc).__name__}")

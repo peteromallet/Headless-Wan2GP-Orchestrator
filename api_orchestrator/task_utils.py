@@ -146,34 +146,25 @@ async def claim_next_task(client: httpx.AsyncClient, worker_id: str, run_type: O
 
 
 async def mark_complete_via_edge_function(client: httpx.AsyncClient, task_id: str, output_location: str = None) -> bool:
-    """Mark task complete via update-task-status edge function"""
+    """Mark task complete via mark-task-complete edge function (for cases without file upload)"""
     try:
-        supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        edge_url = (
-            os.getenv("SUPABASE_EDGE_UPDATE_TASK_URL") 
-            or (f"{supabase_url}/functions/v1/update-task-status" if supabase_url else None)
-        )
+        urls = _get_supabase_edge_urls()
+        headers = _auth_headers()
         
-        if not edge_url:
-            logger.error(f"No update-task-status edge URL configured")
+        if not urls["complete"] or not headers["Authorization"]:
+            logger.error(f"Missing mark-task-complete URL or auth token")
             return False
             
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('SUPABASE_ACCESS_TOKEN') or os.getenv('SUPABASE_SERVICE_ROLE_KEY')}"
-        }
-        
         payload = {
-            "task_id": task_id,
-            "status": "Complete"
+            "task_id": task_id
         }
         if output_location:
             payload["output_location"] = output_location
             
-        logger.info(f"Attempting to mark task {task_id} complete via {edge_url}")
+        logger.info(f"Attempting to mark task {task_id} complete via {urls['complete']}")
         logger.debug(f"Payload: {payload}")
         
-        resp = await client.post(edge_url, json=payload, headers=headers, timeout=30)
+        resp = await client.post(urls["complete"], json=payload, headers=headers, timeout=30)
         
         # Log response details for debugging
         logger.info(f"Mark complete response: status={resp.status_code}, headers={dict(resp.headers)}")
