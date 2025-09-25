@@ -521,23 +521,55 @@ export WORKER_ID="{worker_id}"
 export SUPABASE_URL="{supabase_url}"
 export SUPABASE_ANON_KEY="{supabase_anon_key}"
 export SUPABASE_SERVICE_ROLE_KEY="{supabase_service_key}"
+export SUPABASE_SERVICE_KEY="{supabase_service_key}"
 export REPLICATE_API_TOKEN="{os.getenv('REPLICATE_API_TOKEN', '')}"
+
+# Create logs directory FIRST (critical for debugging)
+mkdir -p /workspace/Headless-Wan2GP/logs
+
+# Initialize comprehensive logging IMMEDIATELY
+echo "=========================================" > /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "🚀 WORKER STARTUP SCRIPT EXECUTION BEGIN" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "=========================================" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "Script PID: $$" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "Timestamp: $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "Initial PWD: $(pwd)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "USER: $(whoami)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "Shell: $0" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "Environment vars: $(env | wc -l) total" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+
+# Set up error handling with detailed error reporting
+set -e  # Exit on any error
+trap 'echo "❌ SCRIPT FAILED at line $LINENO with exit code $? at $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log; exit 1' ERR
+
+echo "✅ Changing to workspace directory..." >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
 
 # Change to workspace directory
 cd /workspace/Headless-Wan2GP/
 
-# Create logs directory
-mkdir -p logs
+echo "✅ Now in directory: $(pwd)" >> logs/{worker_id}.log 2>&1
+echo "✅ Directory contents:" >> logs/{worker_id}.log 2>&1
+ls -la >> logs/{worker_id}.log 2>&1
 
-# Start debug logging
-echo "=== WORKER STARTUP DEBUG ===" > logs/{worker_id}.log 2>&1
-echo "Timestamp: $(date)" >> logs/{worker_id}.log 2>&1
 echo "Worker ID: $WORKER_ID" >> logs/{worker_id}.log 2>&1
-echo "Working directory: $(pwd)" >> logs/{worker_id}.log 2>&1
 
 # Try git pull (but don't fail if it times out)
 echo "=== GIT PULL ===" >> logs/{worker_id}.log 2>&1
-timeout 30 git pull origin main >> logs/{worker_id}.log 2>&1 || echo "Git pull failed or timed out, continuing with existing code" >> logs/{worker_id}.log 2>&1
+
+# Capture commit before pull
+BEFORE_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+echo "Before commit: $BEFORE_COMMIT" >> logs/{worker_id}.log 2>&1
+
+# Perform pull with timeout and record exit status
+timeout 30 git pull origin main >> logs/{worker_id}.log 2>&1
+GIT_PULL_EXIT=$?
+if [ "$GIT_PULL_EXIT" -ne 0 ]; then
+    echo "Git pull failed or timed out (exit $GIT_PULL_EXIT), continuing with existing code" >> logs/{worker_id}.log 2>&1
+fi
+
+# Capture commit after pull to detect if code actually changed
+AFTER_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+echo "After commit:  $AFTER_COMMIT" >> logs/{worker_id}.log 2>&1
 
 # Install essential dependencies if needed (quietly)
 echo "=== INSTALLING DEPENDENCIES ===" >> logs/{worker_id}.log 2>&1
@@ -587,6 +619,22 @@ echo "Virtual env activated: $VIRTUAL_ENV" >> logs/{worker_id}.log 2>&1
 echo "Python path: $(which python)" >> logs/{worker_id}.log 2>&1
 echo "Python version: $(python --version)" >> logs/{worker_id}.log 2>&1
 
+# If repo updated successfully, update Python dependencies
+echo "=== DEPENDENCY UPDATE (conditional) ===" >> logs/{worker_id}.log 2>&1
+if [ "${{GIT_PULL_EXIT:-1}}" -eq 0 ] && [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
+    echo "Git updated code ($BEFORE_COMMIT -> $AFTER_COMMIT). Installing/upgrading Python deps..." >> logs/{worker_id}.log 2>&1
+    python -m pip install --upgrade -r requirements.txt >> logs/{worker_id}.log 2>&1 || echo "WARNING: pip install failed" >> logs/{worker_id}.log 2>&1
+    # Also install subfolder requirements if present
+    if [ -f Wan2GP/requirements.txt ]; then
+        echo "Installing subfolder requirements from Wan2GP/requirements.txt" >> logs/{worker_id}.log 2>&1
+        python -m pip install --upgrade -r Wan2GP/requirements.txt >> logs/{worker_id}.log 2>&1 || echo "WARNING: subfolder pip install failed" >> logs/{worker_id}.log 2>&1
+    else
+        echo "No subfolder requirements found at Wan2GP/requirements.txt" >> logs/{worker_id}.log 2>&1
+    fi
+else
+    echo "No repo updates detected or git pull failed; skipping pip install" >> logs/{worker_id}.log 2>&1
+fi
+
 # Verify worker.py exists
 echo "=== CHECKING FILES ===" >> logs/{worker_id}.log 2>&1
 ls -la worker.py >> logs/{worker_id}.log 2>&1
@@ -595,43 +643,93 @@ ls -la worker.py >> logs/{worker_id}.log 2>&1
 echo "=== TESTING PYTHON ===" >> logs/{worker_id}.log 2>&1
 timeout 10 python -c "import sys; print('Python can start'); print('sys.path:', sys.path[:3])" >> logs/{worker_id}.log 2>&1 || echo "Python import test failed" >> logs/{worker_id}.log 2>&1
 
+# Final pre-flight checks before starting worker
+echo "=== PRE-FLIGHT CHECKS ===" >> logs/{worker_id}.log 2>&1
+echo "✅ Checking virtual environment..." >> logs/{worker_id}.log 2>&1
+echo "VIRTUAL_ENV: $VIRTUAL_ENV" >> logs/{worker_id}.log 2>&1
+echo "Python path: $(which python)" >> logs/{worker_id}.log 2>&1
+echo "Python version: $(python --version)" >> logs/{worker_id}.log 2>&1
+
+echo "✅ Checking worker.py..." >> logs/{worker_id}.log 2>&1
+if [ -f worker.py ]; then
+    echo "worker.py exists ($(wc -l < worker.py) lines)" >> logs/{worker_id}.log 2>&1
+else
+    echo "❌ ERROR: worker.py not found!" >> logs/{worker_id}.log 2>&1
+    exit 1
+fi
+
+echo "✅ Testing Python imports..." >> logs/{worker_id}.log 2>&1
+python -c "import sys, os; print('Python working, sys.path has', len(sys.path), 'entries')" >> logs/{worker_id}.log 2>&1 || echo "❌ Python import test failed" >> logs/{worker_id}.log 2>&1
+
+echo "✅ Checking environment variables..." >> logs/{worker_id}.log 2>&1
+echo "WORKER_ID: $WORKER_ID" >> logs/{worker_id}.log 2>&1
+echo "SUPABASE_URL: ${{SUPABASE_URL:0:30}}..." >> logs/{worker_id}.log 2>&1
+echo "SUPABASE_ANON_KEY: ${{SUPABASE_ANON_KEY:0:20}}..." >> logs/{worker_id}.log 2>&1
+echo "SUPABASE_SERVICE_ROLE_KEY: ${{SUPABASE_SERVICE_ROLE_KEY:0:20}}..." >> logs/{worker_id}.log 2>&1
+
 # Start the actual worker process
 echo "=== STARTING MAIN WORKER ===" >> logs/{worker_id}.log 2>&1
-echo "Command: python worker.py --db-type supabase --supabase-url $SUPABASE_URL --supabase-anon-key $SUPABASE_ANON_KEY --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID" >> logs/{worker_id}.log 2>&1
+WORKER_CMD="python worker.py --db-type supabase --supabase-url $SUPABASE_URL --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID"
+echo "Command: $WORKER_CMD" >> logs/{worker_id}.log 2>&1
+echo "Starting at: $(date)" >> logs/{worker_id}.log 2>&1
 
-# Start worker in background
-nohup python worker.py --db-type supabase \\
-  --supabase-url "$SUPABASE_URL" \\
-  --supabase-anon-key "$SUPABASE_ANON_KEY" \\
-  --supabase-access-token "$SUPABASE_SERVICE_ROLE_KEY" \\
-  --worker "$WORKER_ID" >> logs/{worker_id}.log 2>&1 &
+# Start worker in background with comprehensive logging
+nohup $WORKER_CMD >> logs/{worker_id}.log 2>&1 &
+WORKER_PID=$!
 
-echo "Worker process started with PID: $!" >> logs/{worker_id}.log 2>&1
-echo "Worker startup completed successfully"
+echo "✅ Worker process started with PID: $WORKER_PID at $(date)" >> logs/{worker_id}.log 2>&1
+
+# Give the worker a moment to start and check if it's still running
+sleep 2
+if kill -0 $WORKER_PID 2>/dev/null; then
+    echo "✅ Worker process $WORKER_PID is still running after 2 seconds" >> logs/{worker_id}.log 2>&1
+else
+    echo "❌ ERROR: Worker process $WORKER_PID died immediately!" >> logs/{worker_id}.log 2>&1
+    echo "Exit status was: $?" >> logs/{worker_id}.log 2>&1
+fi
+
+echo "=========================================" >> logs/{worker_id}.log 2>&1
+echo "🏁 STARTUP SCRIPT COMPLETED SUCCESSFULLY" >> logs/{worker_id}.log 2>&1
+echo "=========================================" >> logs/{worker_id}.log 2>&1
 """
 
         # Write the script to a temporary file and execute it
         script_path = f"/tmp/start_worker_{worker_id}.sh"
+        
+        logger.info(f"Creating startup script at {script_path} for worker {worker_id}")
         
         # First, create the script file
         create_script_command = f"cat > {script_path} << 'SCRIPT_EOF'\n{startup_script}\nSCRIPT_EOF"
         
         result = self.execute_command_on_worker(runpod_id, create_script_command, timeout=10)
         if not result or result[0] != 0:
-            logger.error(f"Failed to create startup script for worker {worker_id}")
+            logger.error(f"Failed to create startup script for worker {worker_id}: {result}")
             return False
         
-        # Make the script executable and run it
-        execute_script_command = f"chmod +x {script_path} && {script_path}"
+        logger.info(f"Startup script created successfully, verifying and executing...")
         
-        result = self.execute_command_on_worker(runpod_id, execute_script_command, timeout=60)
+        # Verify the script was created and make it executable
+        verify_and_execute_command = f"""
+        echo "=== SCRIPT EXECUTION DEBUG ===" > /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        echo "Script path: {script_path}" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        echo "Script exists: $(ls -la {script_path})" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        echo "Script size: $(wc -l < {script_path}) lines" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        echo "Making executable and running at $(date)..." >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        chmod +x {script_path}
+        {script_path} >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log 2>&1 || echo "Script failed with exit code $?" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        echo "Script execution completed at $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        """
+        
+        result = self.execute_command_on_worker(runpod_id, verify_and_execute_command, timeout=120)
         
         if result:
             exit_code, stdout, stderr = result
-            logger.info(f"Worker startup script executed: {stdout.strip() if stdout else 'script completed'}")
-            if stderr.strip():
-                logger.warning(f"Worker startup stderr: {stderr.strip()}")
-            return True
+            logger.info(f"Worker startup script executed with exit code {exit_code}")
+            if stdout and stdout.strip():
+                logger.info(f"Script stdout: {stdout.strip()}")
+            if stderr and stderr.strip():
+                logger.warning(f"Script stderr: {stderr.strip()}")
+            return exit_code == 0
         else:
             logger.error(f"Failed to execute worker startup script")
             return False

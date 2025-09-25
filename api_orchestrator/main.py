@@ -21,7 +21,7 @@ from .video_utils import download_video_to_temp, remove_last_frame_from_video, j
 load_dotenv()
 
 CONCURRENCY = int(os.getenv("API_WORKER_CONCURRENCY", "20"))
-RUN_TYPE = "gpu"  # Hardcoded for GPU workers - they process GPU tasks
+RUN_TYPE = "api"  # Hardcoded for API workers - they process API tasks
 PARENT_POLL_SEC = int(os.getenv("API_PARENT_POLL_SEC", "10"))
 
 
@@ -60,22 +60,59 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         endpoint_path = "wavespeed-ai/qwen-image/edit-lora"
         logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
         
+        # Build the prompt with style and subject modifications
+        original_prompt = params.get("prompt", "")
+        modified_prompt = original_prompt
+        
+        # Get style and subject parameters
+        style_strength = params.get("style_reference_strength", 0.0)
+        subject_strength = params.get("subject_strength", 0.0)
+        subject_description = params.get("subject_description", "")
+        in_this_scene = params.get("in_this_scene", False)
+        
+        # Build prompt modifications
+        prompt_parts = []
+        has_style_prefix = False
+        
+        # Add style prefix if style_strength > 0
+        if style_strength > 0.0:
+            prompt_parts.append("In the style of this image,")
+            has_style_prefix = True
+        
+        # Add subject prefix if subject_strength > 0
+        if subject_strength > 0.0 and subject_description:
+            # Use lowercase 'make' if style prefix is already present
+            make_word = "make" if has_style_prefix else "Make"
+            if in_this_scene:
+                prompt_parts.append(f"{make_word} an image of this {subject_description} in this scene:")
+            else:
+                prompt_parts.append(f"{make_word} an image of this {subject_description}:")
+        
+        # Combine prompt parts with original prompt
+        if prompt_parts:
+            modified_prompt = " ".join(prompt_parts) + " " + original_prompt
+            logger.info(f"Modified prompt from '{original_prompt}' to '{modified_prompt}'")
+        
+        # Determine which reference image to use (they should be the same)
+        reference_image = params.get("style_reference_image") or params.get("subject_reference_image", "")
+        
         # Map parameters to Wavespeed API format for style transfer
         wavespeed_params = {
             "enable_base64_output": params.get("enable_base64_output", False),
             "enable_sync_mode": params.get("enable_sync_mode", False),
             "output_format": params.get("output_format", "jpeg"),
-            "prompt": params.get("prompt", ""),
+            "prompt": modified_prompt,
             "seed": params.get("seed", -1),
-            "image": params.get("style_reference_image", ""),
+            "image": reference_image,
             "model_id": params.get("model_id", "wavespeed-ai/qwen-image/edit-lora"),
             "loras": []
         }
         
+        logger.info(f"Using reference image: {reference_image}")
+        
         # Add LoRA configuration for style transfer
         # Use a default style transfer LoRA if style_reference_strength is provided
-        style_strength = params.get("style_reference_strength", 1.0)
-        if style_strength and params.get("style_reference_image"):
+        if style_strength > 0.0:
             # Default style transfer LoRA path - can be overridden via params
             default_lora_path = "https://huggingface.co/peteromallet/ad_motion_loras/resolve/main/style_transfer_qwen_edit_2_000011250.safetensors"
             lora_path = params.get("style_lora_path", default_lora_path)
@@ -85,6 +122,16 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
                 "scale": float(style_strength)
             })
             logger.info(f"Added style transfer LoRA: {lora_path} with strength {style_strength}")
+        
+        # Add subject LoRA if subject_strength > 0
+        if subject_strength > 0.0:
+            # Add subject LoRA
+            subject_lora_path = "https://huggingface.co/peteromallet/mystery_models/resolve/main/in_subject_qwen_edit_2_000006750.safetensors"
+            wavespeed_params["loras"].append({
+                "path": subject_lora_path,
+                "scale": float(subject_strength)
+            })
+            logger.info(f"Added subject LoRA: {subject_lora_path} with strength {subject_strength}")
         
         # Add any additional LoRAs from params
         additional_loras = params.get("loras", [])
