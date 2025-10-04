@@ -1,0 +1,376 @@
+{
+  "timestamp": "2025-09-28T02:37:43.592387",
+  "environment": {
+    "critical": {
+      "RUNPOD_API_KEY": "rpa_14QO...4255",
+      "SUPABASE_URL": "https://...e.co",
+      "SUPABASE_SERVICE_ROLE_KEY": "eyJhbGci...YuiU",
+      "RUNPOD_SSH_PRIVATE_KEY_PATH": "/Users/p..._rsa"
+    },
+    "important": {
+      "RUNPOD_STORAGE_NAME": "Peter",
+      "RUNPOD_GPU_TYPE": "NVIDIA GeForce RTX 4090",
+      "RUNPOD_WORKER_IMAGE": "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+      "RUNPOD_VOLUME_MOUNT_PATH": "/workspace",
+      "RUNPOD_DISK_SIZE_GB": "20",
+      "RUNPOD_CONTAINER_DISK_GB": "50",
+      "MAX_ACTIVE_GPUS": "10",
+      "MIN_ACTIVE_GPUS": "0",
+      "GPU_IDLE_TIMEOUT_SEC": "600",
+      "TASKS_PER_GPU_THRESHOLD": "3",
+      "AUTO_START_WORKER_PROCESS": "true"
+    },
+    "aws": {
+      "AWS_ACCESS_KEY_ID": "***PRESENT***",
+      "AWS_SECRET_ACCESS_KEY": "***PRESENT***",
+      "AWS_DEFAULT_REGION": "eu-ro-1"
+    },
+    "all_runpod": {
+      "RUNPOD_WORKER_REPO_URL": "https://github.com/runpod/worker-template.git",
+      "RUNPOD_SSH_PUBLIC_KEY_PATH": "/Users/peteromalley/.ssh/id_rsa.pub"
+    },
+    "missing_critical": [
+      "RUNPOD_SSH_PUBLIC_KEY",
+      "RUNPOD_SSH_PRIVATE_KEY"
+    ],
+    "missing_important": []
+  },
+  "database_state": {
+    "error": "{'code': 'PGRST202', 'details': 'Searched for the function public.get_task_counts_detailed without parameters or with a single unnamed json/jsonb parameter, but no matches were found in the schema cache.', 'hint': 'Perhaps you meant to call the function public.get_task_run_type', 'message': 'Could not find the function public.get_task_counts_detailed without parameters in the schema cache'}"
+  },
+  "runpod_state": {
+    "total_pods": 3,
+    "pods_by_status": {
+      "RUNNING": 3
+    },
+    "active_pods": [
+      {
+        "id": "d9c9snko7wsye5",
+        "name": "gpu-20250928_003504-4db8b125",
+        "status": "RUNNING",
+        "created_at": null,
+        "cost_per_hr": 0.59,
+        "gpu_count": 1,
+        "machine": null,
+        "runtime": {
+          "ports": [
+            {
+              "ip": "100.65.14.131",
+              "isIpPublic": false,
+              "privatePort": 19123,
+              "publicPort": 60467,
+              "type": "http"
+            },
+            {
+              "ip": "213.173.102.202",
+              "isIpPublic": true,
+              "privatePort": 22,
+              "publicPort": 32478,
+              "type": "tcp"
+            }
+          ]
+        }
+      },
+      {
+        "id": "pj5zcfmh1c03v0",
+        "name": "grim_apricot_gayal",
+        "status": "RUNNING",
+        "created_at": null,
+        "cost_per_hr": 0.59,
+        "gpu_count": 1,
+        "machine": null,
+        "runtime": {
+          "ports": [
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 8085,
+              "publicPort": 18587,
+              "type": "tcp"
+            },
+            {
+              "ip": "100.65.14.158",
+              "isIpPublic": false,
+              "privatePort": 8888,
+              "publicPort": 60038,
+              "type": "http"
+            },
+            {
+              "ip": "100.65.14.158",
+              "isIpPublic": false,
+              "privatePort": 19123,
+              "publicPort": 60037,
+              "type": "http"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 22,
+              "publicPort": 18584,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 4000,
+              "publicPort": 18588,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 5173,
+              "publicPort": 18591,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 8188,
+              "publicPort": 18585,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 3000,
+              "publicPort": 18590,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 5500,
+              "publicPort": 18586,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 7860,
+              "publicPort": 18593,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 80,
+              "publicPort": 18589,
+              "type": "tcp"
+            },
+            {
+              "ip": "213.173.98.33",
+              "isIpPublic": true,
+              "privatePort": 8080,
+              "publicPort": 18592,
+              "type": "tcp"
+            }
+          ]
+        }
+      },
+      {
+        "id": "yv88ftmtwsynig",
+        "name": "gpu-20250927_234409-1efbe13d",
+        "status": "RUNNING",
+        "created_at": null,
+        "cost_per_hr": 0.59,
+        "gpu_count": 1,
+        "machine": null,
+        "runtime": {
+          "ports": [
+            {
+              "ip": "100.65.18.193",
+              "isIpPublic": false,
+              "privatePort": 19123,
+              "publicPort": 60367,
+              "type": "http"
+            },
+            {
+              "ip": "213.173.108.167",
+              "isIpPublic": true,
+              "privatePort": 22,
+              "publicPort": 10124,
+              "type": "tcp"
+            }
+          ]
+        }
+      }
+    ],
+    "ssh_connectivity_tests": {
+      "d9c9snko7wsye5": {
+        "ssh_details": {
+          "ip": "213.173.102.202",
+          "port": 32478,
+          "password": "runpod"
+        },
+        "status": "\u2705 SSH details available",
+        "connection": "\u274c SSH connection failed: Authentication failed."
+      },
+      "pj5zcfmh1c03v0": {
+        "ssh_details": {
+          "ip": "213.173.98.33",
+          "port": 18584,
+          "password": "runpod"
+        },
+        "status": "\u2705 SSH details available",
+        "connection": "\u274c SSH connection failed: Authentication failed."
+      },
+      "yv88ftmtwsynig": {
+        "ssh_details": {
+          "ip": "213.173.108.167",
+          "port": 10124,
+          "password": "runpod"
+        },
+        "status": "\u2705 SSH details available",
+        "connection": "\u274c SSH connection failed: Authentication failed."
+      }
+    },
+    "total_hourly_cost": 1.77
+  },
+  "workers": {
+    "gpu-20250928_003504-4db8b125": {
+      "worker_id": "gpu-20250928_003504-4db8b125",
+      "database_record": {
+        "id": "gpu-20250928_003504-4db8b125",
+        "instance_type": "NVIDIA GeForce RTX 4090",
+        "status": "active",
+        "created_at": "2025-09-28T00:35:04.053113+00:00",
+        "last_heartbeat": "2025-09-28T00:35:04.08471+00:00",
+        "metadata": {
+          "ready": true,
+          "runpod_id": "d9c9snko7wsye5",
+          "pod_details": {
+            "id": "d9c9snko7wsye5",
+            "name": "gpu-20250928_003504-4db8b125",
+            "created": true,
+            "gpu_type_id": "NVIDIA GeForce RTX 4090",
+            "desiredStatus": "PROVISIONING"
+          },
+          "ssh_details": {
+            "ip": "213.173.102.202",
+            "port": 32478,
+            "password": "runpod"
+          },
+          "orchestrator_status": "active",
+          "promoted_to_active_at": "2025-09-28T00:35:33.062374+00:00"
+        }
+      },
+      "runpod_pod": {
+        "id": "d9c9snko7wsye5",
+        "containerDiskInGb": 10,
+        "costPerHr": 0.59,
+        "desiredStatus": "RUNNING",
+        "dockerArgs": null,
+        "dockerId": null,
+        "env": [
+          "WORKER_ID=gpu-20250928_003504-4db8b125",
+          "SUPABASE_URL=https://wczysqzxlwdndgxitrvc.supabase.co",
+          "SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndjenlzcXp4bHdkbmRneGl0cnZjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTUwMjg2OCwiZXhwIjoyMDY3MDc4ODY4fQ.fUHMa3zgfdOu95cAKTz5cd7aSruIcGE7ukVSQI-YuiU",
+          "PUBLIC_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMLNkmbYkCrU0PZaL/l2X8fXhNnyagyowOBMeVhhDlPK peter@omalley.io"
+        ],
+        "gpuCount": 1,
+        "imageName": "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+        "lastStatusChange": "Rented by User: Sun Sep 28 2025 00:35:04 GMT+0000 (Coordinated Universal Time)",
+        "machineId": "lomu09xsqv0e",
+        "memoryInGb": 62,
+        "name": "gpu-20250928_003504-4db8b125",
+        "podType": "RESERVED",
+        "port": null,
+        "ports": "22/tcp",
+        "uptimeSeconds": 0,
+        "vcpuCount": 12,
+        "volumeInGb": 20,
+        "volumeMountPath": "/workspace",
+        "runtime": {
+          "ports": [
+            {
+              "ip": "100.65.14.131",
+              "isIpPublic": false,
+              "privatePort": 19123,
+              "publicPort": 60467,
+              "type": "http"
+            },
+            {
+              "ip": "213.173.102.202",
+              "isIpPublic": true,
+              "privatePort": 22,
+              "publicPort": 32478,
+              "type": "tcp"
+            }
+          ]
+        },
+        "machine": {
+          "gpuDisplayName": "RTX 4090"
+        }
+      },
+      "ssh_analysis": {
+        "ssh_details": {
+          "ip": "213.173.102.202",
+          "port": 32478,
+          "password": "runpod"
+        },
+        "connection_error": "Authentication failed."
+      },
+      "log_analysis": {
+        "s3_logs_available": true
+      },
+      "lifecycle_events": []
+    }
+  },
+  "orchestrator_analysis": {
+    "log_file_exists": false,
+    "recent_cycles": [],
+    "error_patterns": {},
+    "scaling_decisions": [],
+    "worker_lifecycle_events": []
+  },
+  "network_tests": {
+    "Supabase": {
+      "status_code": 404,
+      "response_time_ms": 58,
+      "accessible": true
+    },
+    "RunPod API": {
+      "status_code": 400,
+      "response_time_ms": 184,
+      "accessible": true
+    },
+    "RunPod S3": {
+      "status_code": 401,
+      "response_time_ms": 162,
+      "accessible": true
+    },
+    "GitHub": {
+      "status_code": 200,
+      "response_time_ms": 104,
+      "accessible": true
+    }
+  },
+  "deployment_verification": {
+    "git_status": {
+      "clean": false,
+      "output": "M api_orchestrator/main.py\n M api_orchestrator/wavespeed_utils.py\n?? Comprehensive_Multi_Worker_Failure_Analysis.md\n?? Stitch_Task_Failure_Analysis.md\n?? diagnostic_report_20250919_160257.json\n?? diagnostic_report_20250919_171203.json\n?? diagnostic_report_20250920_041646.json\n?? diagnostic_report_20250921_210748.json\n?? scripts/comprehensive_diagnostics.py\n?? scripts/diagnostic_report_20250912_214407.json\n?? scripts/diagnostic_report_20250912_214428.json\n?? scripts/diagnostic_report_20250912_222959.json\n?? scripts/diagnostic_report_20250912_224013.json\n?? setup_railway_ssh.sh\n?? structure_docs/diagnostics_and_troubleshooting.md\n?? worker_diagnostics_20250919.md",
+      "uncommitted_files": 16,
+      "current_commit": "c1dcc7416a55869af5b254ac776f1b695f01257f"
+    },
+    "local_vs_remote": {},
+    "railway_status": {
+      "command_available": true,
+      "output": "Project: gpu-orchestrator\nEnvironment: production\nService: gpu-orchestrator\n"
+    }
+  },
+  "recommendations": [
+    {
+      "priority": "HIGH",
+      "category": "Environment",
+      "issue": "Missing critical environment variables: RUNPOD_SSH_PUBLIC_KEY, RUNPOD_SSH_PRIVATE_KEY",
+      "action": "Add missing environment variables to Railway deployment"
+    },
+    {
+      "priority": "HIGH",
+      "category": "SSH",
+      "issue": "SSH authentication failing for 3 pods",
+      "action": "Verify RUNPOD_SSH_PRIVATE_KEY is correctly set in Railway environment"
+    }
+  ]
+}

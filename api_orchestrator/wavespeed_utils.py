@@ -35,9 +35,21 @@ async def call_wavespeed_api(endpoint_path: str, params: Dict[str, Any], client:
         **{k: v for k, v in params.items() if k not in ["enable_base64_output", "enable_sync_mode", "output_format"]}
     }
     
+    # Log the request details for debugging
+    logger.info(f"Wavespeed API request to {submit_url}")
+    logger.info(f"Request payload: {payload}")
+    
     # Submit the task
     begin_time = asyncio.get_event_loop().time()
     resp = await client.post(submit_url, headers=headers, json=payload, timeout=30)
+    
+    # Log response details before raising for status
+    if resp.status_code != 200:
+        error_text = resp.text
+        logger.error(f"Wavespeed API error {resp.status_code}: {error_text}")
+        logger.error(f"Request URL: {submit_url}")
+        logger.error(f"Request payload: {payload}")
+    
     resp.raise_for_status()
     
     submit_result = resp.json()

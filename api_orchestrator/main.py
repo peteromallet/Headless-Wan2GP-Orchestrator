@@ -43,11 +43,22 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
             raise Exception(f"Invalid JSON in params field: {e}")
     
     if task_type == "qwen_image_edit" or params.get("api_type") == "wavespeed":
-        # Wavespeed AI image editing
-        # Use the correct Wavespeed endpoint for Qwen image editing with LoRA
-        endpoint_path = params.get("wavespeed_endpoint", "wavespeed-ai/qwen-image/edit-lora")
+        # Wavespeed AI image editing using the new qwen-image/edit-plus endpoint
+        endpoint_path = params.get("wavespeed_endpoint", "wavespeed-ai/qwen-image/edit-plus")
         logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
-        result = await call_wavespeed_api(endpoint_path, params, client)
+        
+        # Map parameters to match the new edit-plus API format
+        image_url = params.get("image", "")
+        wavespeed_params = {
+            "enable_base64_output": params.get("enable_base64_output", False),
+            "enable_sync_mode": params.get("enable_sync_mode", False),
+            "images": [image_url] if image_url else [],  # API expects "images" as array
+            "output_format": params.get("output_format", "jpeg"),
+            "prompt": params.get("prompt", ""),
+            "seed": params.get("seed", -1)
+        }
+        
+        result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
         
         # Process external URL with automatic screenshot extraction for videos
         result = await process_external_url_result(client, task_id, result)

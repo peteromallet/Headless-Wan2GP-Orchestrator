@@ -773,14 +773,30 @@ echo "=========================================" >> logs/{worker_id}.log 2>&1
     
     def get_ssh_client(self, runpod_id: str) -> Optional[SSHClient]:
         """Get an SSH client for connecting to a worker pod."""
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] Getting SSH client - starting authentication flow")
+        
         ssh_details = get_pod_ssh_details(runpod_id, self.api_key)
         if not ssh_details:
-            logger.error(f"Could not get SSH details for pod {runpod_id}")
+            logger.error(f"🔐 SSH_AUTH [Pod {runpod_id}] ❌ FAILED: Could not get SSH details from RunPod API")
             return None
         
-        # Try private key from environment variable first (for Railway)
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] SSH details obtained - IP: {ssh_details['ip']}, Port: {ssh_details['port']}")
+        
+        # Check environment variables for SSH keys
         private_key_env = os.getenv("RUNPOD_SSH_PRIVATE_KEY")
+        public_key_env = os.getenv("RUNPOD_SSH_PUBLIC_KEY")
+        private_key_path_env = os.getenv("RUNPOD_SSH_PRIVATE_KEY_PATH")
+        
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] Environment check:")
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}]   - RUNPOD_SSH_PRIVATE_KEY: {'✅ SET' if private_key_env else '❌ MISSING'}")
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}]   - RUNPOD_SSH_PUBLIC_KEY: {'✅ SET' if public_key_env else '❌ MISSING'}")
+        logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}]   - RUNPOD_SSH_PRIVATE_KEY_PATH: {'✅ SET' if private_key_path_env else '❌ MISSING'}")
+        
+        # Try private key from environment variable first (for Railway)
         if private_key_env:
+            logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] ✅ Using PRIVATE KEY from environment variable")
+            logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] Private key length: {len(private_key_env)} chars")
+            logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] Private key starts with: {private_key_env[:50]}...")
             return SSHClient(
                 hostname=ssh_details['ip'],
                 port=ssh_details['port'],
@@ -790,6 +806,7 @@ echo "=========================================" >> logs/{worker_id}.log 2>&1
         
         # Fallback to private key file path (for local development)
         if self.ssh_private_key_path and os.path.exists(os.path.expanduser(self.ssh_private_key_path)):
+            logger.info(f"🔐 SSH_AUTH [Pod {runpod_id}] ✅ Using PRIVATE KEY from file path: {self.ssh_private_key_path}")
             return SSHClient(
                 hostname=ssh_details['ip'],
                 port=ssh_details['port'],
@@ -797,6 +814,9 @@ echo "=========================================" >> logs/{worker_id}.log 2>&1
                 private_key_path=self.ssh_private_key_path,
             )
         else:
+            logger.warning(f"🔐 SSH_AUTH [Pod {runpod_id}] ⚠️  FALLING BACK to PASSWORD authentication")
+            logger.warning(f"🔐 SSH_AUTH [Pod {runpod_id}] This will likely FAIL as RunPod requires key-based auth")
+            logger.warning(f"🔐 SSH_AUTH [Pod {runpod_id}] Password from RunPod: {ssh_details.get('password', 'runpod')}")
             return SSHClient(
                 hostname=ssh_details['ip'],
                 port=ssh_details['port'],
@@ -806,19 +826,30 @@ echo "=========================================" >> logs/{worker_id}.log 2>&1
     
     def execute_command_on_worker(self, runpod_id: str, command: str, timeout: int = 600) -> Optional[tuple]:
         """Execute a command on a worker via SSH."""
+        logger.info(f"🔐 SSH_EXEC [Pod {runpod_id}] Executing command: {command[:100]}...")
+        
         ssh_client = self.get_ssh_client(runpod_id)
         if not ssh_client:
+            logger.error(f"🔐 SSH_EXEC [Pod {runpod_id}] ❌ FAILED: Could not get SSH client")
             return None
         
         try:
+            logger.info(f"🔐 SSH_EXEC [Pod {runpod_id}] Attempting SSH connection...")
             ssh_client.connect()
+            logger.info(f"🔐 SSH_EXEC [Pod {runpod_id}] ✅ SSH connection successful!")
+            
             exit_code, stdout, stderr = ssh_client.execute_command(command, timeout)
+            logger.info(f"🔐 SSH_EXEC [Pod {runpod_id}] Command completed - Exit code: {exit_code}")
+            if stderr:
+                logger.warning(f"🔐 SSH_EXEC [Pod {runpod_id}] Command stderr: {stderr[:200]}...")
             return exit_code, stdout, stderr
         except Exception as e:
-            logger.error(f"Error executing command on {runpod_id}: {e}")
+            logger.error(f"🔐 SSH_EXEC [Pod {runpod_id}] ❌ SSH EXECUTION FAILED: {e}")
+            logger.error(f"🔐 SSH_EXEC [Pod {runpod_id}] This indicates SSH authentication or connection issues")
             return None
         finally:
-            ssh_client.disconnect()
+            if ssh_client:
+                ssh_client.disconnect()
     
     def get_network_volumes(self) -> list:
         """Get list of available network volumes."""

@@ -65,6 +65,34 @@ class OrchestratorControlLoop:
         self.last_scale_up_at = None
         
         logger.info(f"OrchestratorControlLoop initialized with scaling: {self.min_active_gpus}-{self.max_active_gpus} GPUs, idle buffer: {self.machines_to_keep_idle}")
+        
+        # Log critical environment variables for debugging
+        logger.info("🔧 ENV_VALIDATION Starting orchestrator with environment validation")
+        
+        # SSH Configuration
+        ssh_private_key = os.getenv("RUNPOD_SSH_PRIVATE_KEY")
+        ssh_public_key = os.getenv("RUNPOD_SSH_PUBLIC_KEY")
+        ssh_private_key_path = os.getenv("RUNPOD_SSH_PRIVATE_KEY_PATH")
+        
+        logger.info("🔧 ENV_VALIDATION SSH Configuration:")
+        logger.info(f"🔧 ENV_VALIDATION   - RUNPOD_SSH_PRIVATE_KEY: {'✅ SET' if ssh_private_key else '❌ MISSING'}")
+        logger.info(f"🔧 ENV_VALIDATION   - RUNPOD_SSH_PUBLIC_KEY: {'✅ SET' if ssh_public_key else '❌ MISSING'}")
+        logger.info(f"🔧 ENV_VALIDATION   - RUNPOD_SSH_PRIVATE_KEY_PATH: {'✅ SET' if ssh_private_key_path else '❌ MISSING'}")
+        
+        if not ssh_private_key and not ssh_private_key_path:
+            logger.error("🔧 ENV_VALIDATION ❌ CRITICAL: No SSH private key configured!")
+            logger.error("🔧 ENV_VALIDATION This will cause SSH authentication failures and worker terminations")
+        elif ssh_private_key:
+            logger.info(f"🔧 ENV_VALIDATION ✅ Using SSH key from environment variable ({len(ssh_private_key)} chars)")
+        else:
+            logger.info(f"🔧 ENV_VALIDATION ✅ Using SSH key from file path: {ssh_private_key_path}")
+        
+        # Log timeout configuration
+        logger.info("🔧 ENV_VALIDATION Timeout Configuration:")
+        logger.info(f"🔧 ENV_VALIDATION   - GPU_IDLE_TIMEOUT_SEC: {self.gpu_idle_timeout}")
+        logger.info(f"🔧 ENV_VALIDATION   - TASK_STUCK_TIMEOUT_SEC: {self.task_stuck_timeout}")
+        logger.info(f"🔧 ENV_VALIDATION   - SPAWNING_TIMEOUT_SEC: {self.spawning_timeout}")
+        logger.info("🔧 ENV_VALIDATION Orchestrator initialization complete")
     
     async def run_single_cycle(self) -> Dict[str, Any]:
         """
@@ -603,20 +631,34 @@ class OrchestratorControlLoop:
         Check if a worker is healthy. Returns True if worker should be marked as error.
         """
         worker_id = worker['id']
+        logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Starting health check")
         
         # Check heartbeat expiry
         if worker.get('last_heartbeat'):
+            heartbeat_age_seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(worker['last_heartbeat'].replace('Z', '+00:00'))).total_seconds()
+            logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Heartbeat age: {heartbeat_age_seconds:.1f}s (timeout: {self.gpu_idle_timeout}s)")
+            
             if self._is_past_timeout(worker['last_heartbeat'], self.gpu_idle_timeout):
-                await self._mark_worker_error(worker, 'Heartbeat expired')
+                logger.error(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ❌ HEARTBEAT EXPIRED ({heartbeat_age_seconds:.1f}s > {self.gpu_idle_timeout}s)")
+                await self._mark_worker_error(worker, f'Heartbeat expired ({heartbeat_age_seconds:.1f}s old)')
                 return True
+            else:
+                logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ✅ Heartbeat is fresh")
         elif worker['status'] == 'active':
             # Active worker with no heartbeat is problematic
+            logger.error(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ❌ ACTIVE WORKER WITH NO HEARTBEAT")
             await self._mark_worker_error(worker, 'No heartbeat received')
             return True
+        else:
+            logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] No heartbeat expected (status: {worker['status']})")
         
         # Check for stuck tasks
+        logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Checking for stuck tasks...")
         running_tasks = await self.db.get_running_tasks_for_worker(worker_id)
+        logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Found {len(running_tasks)} running tasks")
+        
         for task in running_tasks:
+            task_id = task['id']
             task_type = task.get('task_type', '')
             
             # Set timeout based on task type
@@ -627,14 +669,18 @@ class OrchestratorControlLoop:
                 if task_type == 'travel_orchestrator':
                     # Allow 3x longer for travel_orchestrator tasks since they manage child tasks
                     timeout = self.task_stuck_timeout * 3
-                    logger.debug(f"Using extended timeout ({timeout}s) for travel_orchestrator task {task['id']}")
+                    logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Using extended timeout ({timeout}s) for travel_orchestrator")
                 else:
                     # Other orchestrator tasks should run indefinitely - skip timeout checks
-                    logger.debug(f"Skipping stuck check for orchestrator task {task['id']} (type: {task_type}) - runs indefinitely")
+                    logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Skipping timeout check for orchestrator task (type: {task_type})")
                     continue
+            
+            task_age_seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(task['generation_started_at'].replace('Z', '+00:00'))).total_seconds()
+            logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Age {task_age_seconds:.1f}s (timeout: {timeout}s)")
                 
             if self._is_past_timeout(task['generation_started_at'], timeout):
-                await self._mark_worker_error(worker, f'Stuck task {task["id"]} (timeout: {timeout}s)')
+                logger.error(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ❌ STUCK TASK DETECTED: {task_id} ({task_age_seconds:.1f}s > {timeout}s)")
+                await self._mark_worker_error(worker, f'Stuck task {task_id} (timeout: {timeout}s, age: {task_age_seconds:.1f}s)')
                 return True
         
         # Check VRAM health (if available)
@@ -642,24 +688,35 @@ class OrchestratorControlLoop:
         if 'vram_timestamp' in metadata:
             vram_age_seconds = datetime.now(timezone.utc).timestamp() - float(metadata['vram_timestamp'])
             gpu_health_timeout = int(os.getenv("GPU_HEALTH_CHECK_TIMEOUT_SEC", "120"))
+            logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] VRAM data age: {vram_age_seconds:.1f}s (timeout: {gpu_health_timeout}s)")
+            
             if vram_age_seconds > gpu_health_timeout:
                 # VRAM data is stale but not necessarily an error - just log it
-                logger.warning(f"Worker {worker_id} has stale VRAM data ({vram_age_seconds:.1f} sec old)")
+                logger.warning(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ⚠️  VRAM data is stale ({vram_age_seconds:.1f}s old)")
+        else:
+            logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] No VRAM data available")
         
+        logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ✅ Health check passed")
         return False
     
     async def _mark_worker_error(self, worker: Dict[str, Any], reason: str):
         """Mark a worker as error and attempt to terminate it."""
         worker_id = worker['id']
         
+        logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] MARKING AS ERROR: {reason}")
+        
         # First, reset any orphaned tasks from this worker before marking it as error
         # This ensures tasks get re-queued immediately and aren't lost
         reset_count = await self.db.reset_orphaned_tasks([worker_id])
         if reset_count > 0:
-            logger.info(f"Reset {reset_count} orphaned tasks from worker {worker_id}")
+            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Reset {reset_count} orphaned tasks")
         
         # Mark worker as error in DB
-        await self.db.mark_worker_error(worker_id, reason)
+        success = await self.db.mark_worker_error(worker_id, reason)
+        if success:
+            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ Database updated with error status")
+        else:
+            logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ Failed to update database with error status")
 
         # Also update local copy so the rest of this cycle treats it as error
         worker['status'] = 'error'
@@ -667,9 +724,19 @@ class OrchestratorControlLoop:
         # Attempt to terminate the Runpod instance
         runpod_id = worker.get('metadata', {}).get('runpod_id')
         if runpod_id:
-            self.runpod.terminate_worker(runpod_id)
+            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Attempting to terminate RunPod instance: {runpod_id}")
+            try:
+                success = self.runpod.terminate_worker(runpod_id)
+                if success:
+                    logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ RunPod instance terminated successfully")
+                else:
+                    logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ Failed to terminate RunPod instance")
+            except Exception as e:
+                logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ Exception terminating RunPod instance: {e}")
+        else:
+            logger.warning(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] No RunPod ID found - cannot terminate instance")
         
-        logger.error(f"Marked worker {worker_id} as error: {reason}")
+        logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Error marking completed - Reason: {reason}")
     
     async def _is_worker_idle(self, worker: Dict[str, Any]) -> bool:
         """
@@ -807,29 +874,38 @@ class OrchestratorControlLoop:
         worker_id = worker['id']
         runpod_id = worker.get('metadata', {}).get('runpod_id')
         
+        logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] TERMINATING worker")
+        logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] RunPod ID: {runpod_id or 'None'}")
+        
         try:
             # Terminate Runpod instance
             if runpod_id:
+                logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Calling RunPod API to terminate instance...")
                 success = self.runpod.terminate_worker(runpod_id)
                 if not success:
+                    logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ RunPod termination FAILED")
                     logger.warning(f"Failed to terminate Runpod instance {runpod_id} for worker {worker_id}")
                     return False  # Don't update database if RunPod termination failed
+                
+                logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ RunPod instance terminated successfully")
                 
                 # Only update worker status if RunPod termination succeeded
                 termination_metadata = {'terminated_at': datetime.now(timezone.utc).isoformat()}
                 await self.db.update_worker_status(worker_id, 'terminated', termination_metadata)
                 
-                logger.debug(f"Terminated worker {worker_id}")
+                logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ Database status updated to 'terminated'")
                 return True
             else:
                 # No runpod_id means worker was never spawned successfully
+                logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] No RunPod instance to terminate")
                 termination_metadata = {'terminated_at': datetime.now(timezone.utc).isoformat()}
                 await self.db.update_worker_status(worker_id, 'terminated', termination_metadata)
                 
-                logger.debug(f"Terminated worker {worker_id} (no RunPod instance)")
+                logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ Database status updated to 'terminated' (no RunPod instance)")
                 return True
             
         except Exception as e:
+            logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ TERMINATION FAILED: {e}")
             logger.error(f"Error terminating worker {worker_id}: {e}")
             return False
     
@@ -907,25 +983,37 @@ class OrchestratorControlLoop:
     
     async def _perform_basic_health_check(self, worker: Dict[str, Any]) -> bool:
         """Perform a basic health check on an idle worker."""
+        worker_id = worker['id']
+        logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Starting basic health check")
+        
         try:
             metadata = worker.get('metadata', {})
             runpod_id = metadata.get('runpod_id')
             
             if not runpod_id:
+                logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ No RunPod ID found")
                 return False
+            
+            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Checking RunPod status for pod {runpod_id}")
             
             # Check if the pod is still running
             pod_status = self.runpod.get_pod_status(runpod_id)
             if not pod_status:
+                logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ Could not get pod status from RunPod API")
                 return False
+            
+            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Pod status: {pod_status.get('desired_status', 'UNKNOWN')}")
             
             # Pod should be in RUNNING state
             if pod_status.get('desired_status') != 'RUNNING':
+                logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  Pod not in RUNNING state: {pod_status.get('desired_status')}")
                 return False
             
             # Optionally check SSH connectivity (quick timeout)
             ssh_details = metadata.get('ssh_details', {})
             if ssh_details and 'ip' in ssh_details and 'port' in ssh_details:
+                logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Testing SSH connectivity to {ssh_details['ip']}:{ssh_details['port']}")
+                
                 # This is a lightweight check - just see if port is open
                 import socket
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -933,15 +1021,22 @@ class OrchestratorControlLoop:
                 try:
                     result = sock.connect_ex((ssh_details['ip'], ssh_details['port']))
                     sock.close()
-                    return result == 0  # 0 means connection successful
-                except:
+                    if result == 0:
+                        logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] ✅ SSH port is accessible")
+                        return True
+                    else:
+                        logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  SSH port not accessible (result: {result})")
+                        return False
+                except Exception as ssh_e:
+                    logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  SSH connectivity test failed: {ssh_e}")
                     return False
             
             # If we can't check SSH, assume healthy if pod is running
+            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] ✅ Pod is running (SSH check skipped)")
             return True
             
         except Exception as e:
-            logger.error(f"Error performing health check for worker {worker['id']}: {e}")
+            logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ Health check failed: {e}")
             return False 
     
     async def _check_error_worker_cleanup(self, worker: Dict[str, Any]) -> None:
