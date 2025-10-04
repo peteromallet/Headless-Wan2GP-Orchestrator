@@ -112,6 +112,16 @@ class DatabaseClient:
                     if response.status == 200:
                         data = await response.json()
                         logger.info(f"✅ Task counts endpoint returned detailed breakdown: {data.get('totals', {})}")
+                        
+                        # Log the FULL response for debugging the discrepancy
+                        logger.info(f"🔍 EDGE_FUNCTION_DEBUG Full response keys: {list(data.keys())}")
+                        if 'users' in data:
+                            total_user_queued = sum(u.get('queued_tasks', 0) for u in data['users'])
+                            total_user_progress = sum(u.get('in_progress_tasks', 0) for u in data['users'])
+                            logger.info(f"🔍 EDGE_FUNCTION_DEBUG User totals: {total_user_queued} queued, {total_user_progress} in progress")
+                        
+                        logger.info(f"🔍 EDGE_FUNCTION_DEBUG Totals from Edge Function: {data.get('totals', 'MISSING')}")
+                        
                         return data
                     else:
                         response_text = await response.text()
