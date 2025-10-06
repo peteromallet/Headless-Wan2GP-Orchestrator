@@ -395,12 +395,27 @@ class OrchestratorControlLoop:
                                     summary['actions']['workers_failed'] += 1
                                     continue
                         else:
-                            # No active task and no queued tasks - worker is idle, do basic health check
-                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued or assigned, performing basic health check")
+                            # No active task and no queued tasks - worker is idle
+                            # Check if idle too long (regardless of capacity to prevent indefinite idle workers)
+                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued or assigned, checking idle timeout")
+                            
+                            # Check if worker has been idle too long
+                            if await self._is_worker_idle_with_timeout(worker, self.gpu_idle_timeout):
+                                # Worker has been idle longer than timeout
+                                # Only terminate if we're above minimum capacity OR if idle is excessive
+                                current_active_count = len([w for w in workers if w['status'] == 'active'])
+                                
+                                if current_active_count > self.min_active_gpus:
+                                    logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s with no queued tasks, terminating (above min capacity)")
+                                    await self._mark_worker_error(worker, f'Idle timeout ({self.gpu_idle_timeout}s) with no work available')
+                                    summary['actions']['workers_failed'] += 1
+                                    continue
+                                else:
+                                    logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s but at minimum capacity, keeping alive")
+                            
+                            # Perform basic health check (pod responsive?)
                             if await self._perform_basic_health_check(worker):
-                                # Worker is responsive but idle - don't update heartbeat
-                                # Let the worker remain idle so it can be terminated after timeout
-                                logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check but is idle - not updating heartbeat")
+                                logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check, monitoring idle time")
                             else:
                                 # Worker not responsive
                                 logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Failed basic health check")
