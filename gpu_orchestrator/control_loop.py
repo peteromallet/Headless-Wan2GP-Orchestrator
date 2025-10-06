@@ -752,33 +752,60 @@ class OrchestratorControlLoop:
     async def _is_worker_idle_with_timeout(self, worker: Dict[str, Any], timeout_seconds: int) -> bool:
         """
         Check if a worker is idle and has been idle long enough to terminate.
-        Uses a dynamic timeout based on whether we're over capacity.
+        Uses actual last task completion time, NOT heartbeat time.
         """
         # First check if worker has any running tasks
         has_tasks = await self.db.has_running_tasks(worker['id'])
         if has_tasks:
             return False  # Worker is busy, not idle
         
-        # Worker has no tasks - check how long it's been idle
-        # Look for the most recent activity (task completion or heartbeat)
-        last_activity = worker.get('last_heartbeat', worker['created_at'])
-        
-        # Check if we have recent task completions
+        # Check if we have recent task completions (last 30 seconds)
         recent_completions = await self._check_recent_task_completions(worker['id'])
         if recent_completions > 0:
             # Worker completed tasks recently, so it's not idle long enough
             return False
         
-        # Parse the last activity timestamp
-        last_activity_dt = datetime.fromisoformat(last_activity.replace('Z', '+00:00'))
-        if last_activity_dt.tzinfo is None:
-            last_activity_dt = last_activity_dt.replace(tzinfo=timezone.utc)
-        
-        # Calculate idle time
-        idle_time = (datetime.now(timezone.utc) - last_activity_dt).total_seconds()
-        
-        # Use the provided timeout to determine if worker has been idle too long
-        return idle_time > timeout_seconds
+        # Worker has no recent completions - find the actual last task completion time
+        # We need to query the database for the most recent completed task
+        try:
+            result = self.db.supabase.table('tasks').select('generation_processed_at, updated_at') \
+                .eq('worker_id', worker['id']) \
+                .eq('status', 'Complete') \
+                .order('generation_processed_at', desc=True) \
+                .limit(1) \
+                .execute()
+            
+            if result.data:
+                # Use generation_processed_at if available, otherwise updated_at
+                last_completion_time = result.data[0].get('generation_processed_at') or result.data[0].get('updated_at')
+                if last_completion_time:
+                    last_completion_dt = datetime.fromisoformat(last_completion_time.replace('Z', '+00:00'))
+                    if last_completion_dt.tzinfo is None:
+                        last_completion_dt = last_completion_dt.replace(tzinfo=timezone.utc)
+                    
+                    # Calculate time since last task completion
+                    idle_time = (datetime.now(timezone.utc) - last_completion_dt).total_seconds()
+                    
+                    # Worker is idle if it hasn't completed a task in timeout_seconds
+                    return idle_time > timeout_seconds
+            
+            # No completed tasks found - use worker creation time as baseline
+            created_dt = datetime.fromisoformat(worker['created_at'].replace('Z', '+00:00'))
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            
+            worker_age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+            return worker_age > timeout_seconds
+            
+        except Exception as e:
+            logger.error(f"Error checking idle time for worker {worker['id']}: {e}")
+            # Fall back to original behavior (use heartbeat)
+            last_activity = worker.get('last_heartbeat', worker['created_at'])
+            last_activity_dt = datetime.fromisoformat(last_activity.replace('Z', '+00:00'))
+            if last_activity_dt.tzinfo is None:
+                last_activity_dt = last_activity_dt.replace(tzinfo=timezone.utc)
+            idle_time = (datetime.now(timezone.utc) - last_activity_dt).total_seconds()
+            return idle_time > timeout_seconds
     
     async def _should_scale_up(self, queued_count: int, active_count: int) -> bool:
         """Determine if we should scale up based on queue depth."""
