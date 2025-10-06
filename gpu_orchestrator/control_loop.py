@@ -342,28 +342,14 @@ class OrchestratorControlLoop:
                         # Worker completed tasks recently - update heartbeat
                         await self.db.update_worker_heartbeat(worker['id'])
                         logger.debug(f"Updated heartbeat for worker {worker['id']} - completed {recent_completions} tasks")
-                    elif queued_count == 0:
-                        # No tasks in queue - do a basic health check
-                        logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued, performing basic health check")
-                        if await self._perform_basic_health_check(worker):
-                            # Worker is responsive but idle - don't update heartbeat
-                            # Let the worker remain idle so it can be terminated after timeout
-                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check but is idle - not updating heartbeat")
-                        else:
-                            # Worker not responsive
-                            logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Failed basic health check")
-                            await self._mark_worker_error(worker, 'Failed basic health check')
-                            summary['actions']['workers_failed'] += 1
-                            continue
                     else:
-                        # Tasks are queued but worker hasn't completed any recently
-                        logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: {queued_count} tasks queued but no recent completions - checking for idle state")
-                        # Check if worker is actively processing a task
+                        # Worker hasn't completed tasks recently - check if it has active tasks assigned
                         has_active_task = await self.db.has_running_tasks(worker['id'])
                         
                         if has_active_task:
-                            # Worker has tasks assigned but isn't completing them - this could indicate a stuck worker
-                            # Check heartbeat age instead of auto-updating it
+                            # Worker has tasks assigned - ALWAYS check heartbeat regardless of queued_count
+                            # This catches frozen workers even when user concurrency limits hide queued tasks
+                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Has active task, checking heartbeat")
                             last_heartbeat = worker.get('last_heartbeat')
                             if last_heartbeat:
                                 heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
@@ -372,18 +358,21 @@ class OrchestratorControlLoop:
                                 
                                 heartbeat_age = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
                                 if heartbeat_age > self.gpu_idle_timeout:
+                                    logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)")
                                     await self._mark_worker_error(worker, f'Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)')
                                     summary['actions']['workers_failed'] += 1
                                     continue
                                 else:
                                     logger.debug(f"Worker {worker['id']} has active tasks and recent heartbeat ({heartbeat_age:.0f}s old)")
                             else:
-                                # No heartbeat but has active tasks - mark as error
+                                # No heartbeat but has active tasks - mark as error immediately
+                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat with active tasks")
                                 await self._mark_worker_error(worker, 'No heartbeat with active tasks')
                                 summary['actions']['workers_failed'] += 1
                                 continue
-                        else:
-                            # No active task and hasn't completed any - check heartbeat age
+                        elif queued_count > 0:
+                            # No active task but tasks are queued - check if worker is idle
+                            logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: {queued_count} tasks queued but worker is idle")
                             last_heartbeat = worker.get('last_heartbeat')
                             if last_heartbeat:
                                 heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
@@ -397,15 +386,27 @@ class OrchestratorControlLoop:
                                     await self._mark_worker_error(worker, 'Idle with tasks queued')
                                     summary['actions']['workers_failed'] += 1
                                     continue
-                                else:
-                                    logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Still within idle timeout ({heartbeat_age:.0f}s <= {self.gpu_idle_timeout}s)")
                             else:
                                 # No heartbeat ever received with tasks queued
                                 worker_age = (datetime.now(timezone.utc) - datetime.fromisoformat(worker['created_at'].replace('Z', '+00:00'))).total_seconds()
                                 if worker_age > self.gpu_idle_timeout:
+                                    logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat or activity with tasks queued")
                                     await self._mark_worker_error(worker, 'No heartbeat or activity')
                                     summary['actions']['workers_failed'] += 1
                                     continue
+                        else:
+                            # No active task and no queued tasks - worker is idle, do basic health check
+                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued or assigned, performing basic health check")
+                            if await self._perform_basic_health_check(worker):
+                                # Worker is responsive but idle - don't update heartbeat
+                                # Let the worker remain idle so it can be terminated after timeout
+                                logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check but is idle - not updating heartbeat")
+                            else:
+                                # Worker not responsive
+                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Failed basic health check")
+                                await self._mark_worker_error(worker, 'Failed basic health check')
+                                summary['actions']['workers_failed'] += 1
+                                continue
                     
                     # Check for stuck tasks
                     running_tasks = await self.db.get_running_tasks_for_worker(worker['id'])
