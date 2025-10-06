@@ -1078,6 +1078,14 @@ class OrchestratorControlLoop:
         worker_id = worker['id']
         metadata = worker.get('metadata', {})
         runpod_id = metadata.get('runpod_id')
+        error_reason = metadata.get('error_reason', 'Unknown error')
+        self_terminated = metadata.get('self_terminated', False)
+        
+        # Log the error reason for visibility
+        if self_terminated:
+            logger.info(f"[ERROR_CLEANUP] Worker {worker_id} self-terminated: {error_reason}")
+        else:
+            logger.debug(f"[ERROR_CLEANUP] Error worker {worker_id}: {error_reason}")
         
         # Check how long the worker has been in error state
         error_time_str = metadata.get('error_time')
@@ -1090,7 +1098,8 @@ class OrchestratorControlLoop:
                 ERROR_CLEANUP_GRACE_PERIOD = int(os.getenv("ERROR_CLEANUP_GRACE_PERIOD_SEC", "600"))
                 
                 if error_age > ERROR_CLEANUP_GRACE_PERIOD:
-                    logger.info(f"Error worker {worker_id} past grace period ({error_age:.0f}s), forcing cleanup")
+                    logger.info(f"[ERROR_CLEANUP] Worker {worker_id} past grace period ({error_age:.0f}s), forcing cleanup")
+                    logger.info(f"[ERROR_CLEANUP] Reason: {error_reason}")
                     
                     # Check if RunPod instance is still running
                     if runpod_id:
@@ -1107,7 +1116,7 @@ class OrchestratorControlLoop:
                     await self.db.update_worker_status(worker_id, 'terminated')
                     logger.info(f"Marked error worker {worker_id} as terminated")
                 else:
-                    logger.debug(f"Error worker {worker_id} still in grace period ({error_age:.0f}s < {ERROR_CLEANUP_GRACE_PERIOD}s)")
+                    logger.debug(f"[ERROR_CLEANUP] Worker {worker_id} still in grace period ({error_age:.0f}s < {ERROR_CLEANUP_GRACE_PERIOD}s) - Reason: {error_reason}")
                     
             except Exception as e:
                 logger.error(f"Error parsing error_time for worker {worker_id}: {e}")
@@ -1121,14 +1130,15 @@ class OrchestratorControlLoop:
                         logger.error(f"Failed to cleanup error worker {worker_id}: {cleanup_e}")
         else:
             # No error_time means old error format - clean it up
-            logger.warning(f"Error worker {worker_id} has no error_time, forcing immediate cleanup")
+            logger.warning(f"[ERROR_CLEANUP] Worker {worker_id} has no error_time, forcing immediate cleanup")
+            logger.warning(f"[ERROR_CLEANUP] Reason: {error_reason}")
             if runpod_id:
                 try:
                     self.runpod.terminate_worker(runpod_id)
                     await self.db.update_worker_status(worker_id, 'terminated')
-                    logger.info(f"Cleaned up legacy error worker {worker_id}")
+                    logger.info(f"[ERROR_CLEANUP] Cleaned up legacy error worker {worker_id}")
                 except Exception as e:
-                    logger.error(f"Failed to cleanup legacy error worker {worker_id}: {e}")
+                    logger.error(f"[ERROR_CLEANUP] Failed to cleanup legacy error worker {worker_id}: {e}")
     
     async def _failsafe_stale_worker_check(self, workers: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
         """
