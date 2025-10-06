@@ -412,19 +412,13 @@ class OrchestratorControlLoop:
                     for task in running_tasks:
                         task_type = task.get('task_type', '')
                         
-                        # Set timeout based on task type
-                        timeout = self.task_stuck_timeout
-                        
-                        # Check if this is an orchestrator task type
+                        # Skip timeout checks for orchestrator tasks - they run indefinitely
                         if '_orchestrator' in task_type.lower():
-                            if task_type == 'travel_orchestrator':
-                                # Allow 3x longer for travel_orchestrator tasks since they manage child tasks
-                                timeout = self.task_stuck_timeout * 3
-                                logger.debug(f"Using extended timeout ({timeout}s) for travel_orchestrator task {task['id']}")
-                            else:
-                                # Other orchestrator tasks should run indefinitely - skip timeout checks
-                                logger.debug(f"Skipping stuck check for orchestrator task {task['id']} (type: {task_type}) - runs indefinitely")
-                                continue
+                            logger.debug(f"Skipping stuck check for orchestrator task {task['id']} (type: {task_type}) - runs indefinitely")
+                            continue
+                        
+                        # Set timeout for non-orchestrator tasks
+                        timeout = self.task_stuck_timeout
                             
                         if task.get('generation_started_at'):
                             # Parse the task start timestamp and ensure it's timezone-aware
@@ -661,19 +655,13 @@ class OrchestratorControlLoop:
             task_id = task['id']
             task_type = task.get('task_type', '')
             
-            # Set timeout based on task type
-            timeout = self.task_stuck_timeout
-            
-            # Check if this is an orchestrator task type
+            # Skip timeout checks for orchestrator tasks - they run indefinitely
             if '_orchestrator' in task_type.lower():
-                if task_type == 'travel_orchestrator':
-                    # Allow 3x longer for travel_orchestrator tasks since they manage child tasks
-                    timeout = self.task_stuck_timeout * 3
-                    logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Using extended timeout ({timeout}s) for travel_orchestrator")
-                else:
-                    # Other orchestrator tasks should run indefinitely - skip timeout checks
-                    logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Skipping timeout check for orchestrator task (type: {task_type})")
-                    continue
+                logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Skipping timeout check for orchestrator task (type: {task_type})")
+                continue
+            
+            # Set timeout for non-orchestrator tasks
+            timeout = self.task_stuck_timeout
             
             task_age_seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(task['generation_started_at'].replace('Z', '+00:00'))).total_seconds()
             logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] Task {task_id}: Age {task_age_seconds:.1f}s (timeout: {timeout}s)")
