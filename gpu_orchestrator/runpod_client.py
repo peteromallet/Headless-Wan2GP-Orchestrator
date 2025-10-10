@@ -527,170 +527,172 @@ export REPLICATE_API_TOKEN="{os.getenv('REPLICATE_API_TOKEN', '')}"
 # Create logs directory FIRST (critical for debugging)
 mkdir -p /workspace/Headless-Wan2GP/logs
 
-# Initialize comprehensive logging IMMEDIATELY
-echo "=========================================" > /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "🚀 WORKER STARTUP SCRIPT EXECUTION BEGIN" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "=========================================" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "Script PID: $$" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "Timestamp: $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "Initial PWD: $(pwd)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "USER: $(whoami)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "Shell: $0" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
-echo "Environment vars: $(env | wc -l) total" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+# Initialize comprehensive logging IMMEDIATELY with gpu_ prefix
+LOG_FILE="/workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log"
+echo "=========================================" > "$LOG_FILE"
+echo "🚀 WORKER STARTUP SCRIPT EXECUTION BEGIN" >> "$LOG_FILE"
+echo "=========================================" >> "$LOG_FILE"
+echo "Script PID: $$" >> "$LOG_FILE"
+echo "Timestamp: $(date)" >> "$LOG_FILE"
+echo "Initial PWD: $(pwd)" >> "$LOG_FILE"
+echo "USER: $(whoami)" >> "$LOG_FILE"
+echo "Shell: $0" >> "$LOG_FILE"
+echo "Environment vars: $(env | wc -l) total" >> "$LOG_FILE"
+echo "Log file: $LOG_FILE" >> "$LOG_FILE"
 
 # Set up error handling with detailed error reporting
 set -e  # Exit on any error
-trap 'echo "❌ SCRIPT FAILED at line $LINENO with exit code $? at $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}.log; exit 1' ERR
+trap 'echo "❌ SCRIPT FAILED at line $LINENO with exit code $? at $(date)" >> "$LOG_FILE"; exit 1' ERR
 
-echo "✅ Changing to workspace directory..." >> /workspace/Headless-Wan2GP/logs/{worker_id}.log
+echo "✅ Changing to workspace directory..." >> "$LOG_FILE"
 
 # Change to workspace directory
 cd /workspace/Headless-Wan2GP/
 
-echo "✅ Now in directory: $(pwd)" >> logs/{worker_id}.log 2>&1
-echo "✅ Directory contents:" >> logs/{worker_id}.log 2>&1
-ls -la >> logs/{worker_id}.log 2>&1
+echo "✅ Now in directory: $(pwd)" >> "$LOG_FILE" 2>&1
+echo "✅ Directory contents:" >> "$LOG_FILE" 2>&1
+ls -la >> "$LOG_FILE" 2>&1
 
-echo "Worker ID: $WORKER_ID" >> logs/{worker_id}.log 2>&1
+echo "Worker ID: $WORKER_ID" >> "$LOG_FILE" 2>&1
 
 # Try git pull (but don't fail if it times out)
-echo "=== GIT PULL ===" >> logs/{worker_id}.log 2>&1
+echo "=== GIT PULL ===" >> "$LOG_FILE" 2>&1
 
 # Capture commit before pull
 BEFORE_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-echo "Before commit: $BEFORE_COMMIT" >> logs/{worker_id}.log 2>&1
+echo "Before commit: $BEFORE_COMMIT" >> "$LOG_FILE" 2>&1
 
 # Perform pull with timeout and record exit status
-timeout 30 git pull origin main >> logs/{worker_id}.log 2>&1
+timeout 30 git pull origin main >> "$LOG_FILE" 2>&1
 GIT_PULL_EXIT=$?
 if [ "$GIT_PULL_EXIT" -ne 0 ]; then
-    echo "Git pull failed or timed out (exit $GIT_PULL_EXIT), continuing with existing code" >> logs/{worker_id}.log 2>&1
+    echo "Git pull failed or timed out (exit $GIT_PULL_EXIT), continuing with existing code" >> "$LOG_FILE" 2>&1
 fi
 
 # Capture commit after pull to detect if code actually changed
 AFTER_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-echo "After commit:  $AFTER_COMMIT" >> logs/{worker_id}.log 2>&1
+echo "After commit:  $AFTER_COMMIT" >> "$LOG_FILE" 2>&1
 
 # Install essential dependencies if needed (quietly)
-echo "=== INSTALLING DEPENDENCIES ===" >> logs/{worker_id}.log 2>&1
+echo "=== INSTALLING DEPENDENCIES ===" >> $LOG_FILE 2>&1
 
 # Update package list first
-echo "Updating package list..." >> logs/{worker_id}.log 2>&1
-if apt-get update -qq >> logs/{worker_id}.log 2>&1; then
-    echo "Package list updated successfully" >> logs/{worker_id}.log 2>&1
+echo "Updating package list..." >> $LOG_FILE 2>&1
+if apt-get update -qq >> $LOG_FILE 2>&1; then
+    echo "Package list updated successfully" >> $LOG_FILE 2>&1
 else
-    echo "WARNING: Package list update failed" >> logs/{worker_id}.log 2>&1
+    echo "WARNING: Package list update failed" >> $LOG_FILE 2>&1
 fi
 
 # Install dependencies with proper error checking
-echo "Installing python3.10-venv ffmpeg git curl wget..." >> logs/{worker_id}.log 2>&1
-if apt-get install -y -qq python3.10-venv ffmpeg git curl wget >> logs/{worker_id}.log 2>&1; then
-    echo "Dependencies installed successfully" >> logs/{worker_id}.log 2>&1
+echo "Installing python3.10-venv ffmpeg git curl wget..." >> $LOG_FILE 2>&1
+if apt-get install -y -qq python3.10-venv ffmpeg git curl wget >> $LOG_FILE 2>&1; then
+    echo "Dependencies installed successfully" >> $LOG_FILE 2>&1
 else
-    echo "ERROR: Dependency installation failed!" >> logs/{worker_id}.log 2>&1
-    echo "Attempting to continue, but worker may not function correctly" >> logs/{worker_id}.log 2>&1
+    echo "ERROR: Dependency installation failed!" >> $LOG_FILE 2>&1
+    echo "Attempting to continue, but worker may not function correctly" >> $LOG_FILE 2>&1
 fi
 
 # Verify critical dependencies
-echo "=== VERIFYING DEPENDENCIES ===" >> logs/{worker_id}.log 2>&1
+echo "=== VERIFYING DEPENDENCIES ===" >> $LOG_FILE 2>&1
 if command -v ffmpeg >/dev/null 2>&1; then
-    echo "✅ FFmpeg found: $(which ffmpeg)" >> logs/{worker_id}.log 2>&1
-    echo "✅ FFmpeg version: $(ffmpeg -version 2>&1 | head -1)" >> logs/{worker_id}.log 2>&1
+    echo "✅ FFmpeg found: $(which ffmpeg)" >> $LOG_FILE 2>&1
+    echo "✅ FFmpeg version: $(ffmpeg -version 2>&1 | head -1)" >> $LOG_FILE 2>&1
 else
-    echo "❌ ERROR: FFmpeg not found! Worker cannot process videos" >> logs/{worker_id}.log 2>&1
+    echo "❌ ERROR: FFmpeg not found! Worker cannot process videos" >> $LOG_FILE 2>&1
 fi
 
 if command -v git >/dev/null 2>&1; then
-    echo "✅ Git found: $(which git)" >> logs/{worker_id}.log 2>&1
+    echo "✅ Git found: $(which git)" >> $LOG_FILE 2>&1
 else
-    echo "❌ WARNING: Git not found!" >> logs/{worker_id}.log 2>&1
+    echo "❌ WARNING: Git not found!" >> $LOG_FILE 2>&1
 fi
 
 if command -v python3.10 >/dev/null 2>&1; then
-    echo "✅ Python 3.10 found: $(which python3.10)" >> logs/{worker_id}.log 2>&1
+    echo "✅ Python 3.10 found: $(which python3.10)" >> $LOG_FILE 2>&1
 else
-    echo "❌ WARNING: Python 3.10 not found!" >> logs/{worker_id}.log 2>&1
+    echo "❌ WARNING: Python 3.10 not found!" >> $LOG_FILE 2>&1
 fi
 
 # Activate virtual environment
-echo "=== ACTIVATING VIRTUAL ENV ===" >> logs/{worker_id}.log 2>&1
+echo "=== ACTIVATING VIRTUAL ENV ===" >> $LOG_FILE 2>&1
 source venv/bin/activate
-echo "Virtual env activated: $VIRTUAL_ENV" >> logs/{worker_id}.log 2>&1
-echo "Python path: $(which python)" >> logs/{worker_id}.log 2>&1
-echo "Python version: $(python --version)" >> logs/{worker_id}.log 2>&1
+echo "Virtual env activated: $VIRTUAL_ENV" >> $LOG_FILE 2>&1
+echo "Python path: $(which python)" >> $LOG_FILE 2>&1
+echo "Python version: $(python --version)" >> $LOG_FILE 2>&1
 
 # If repo updated successfully, update Python dependencies
-echo "=== DEPENDENCY UPDATE (conditional) ===" >> logs/{worker_id}.log 2>&1
+echo "=== DEPENDENCY UPDATE (conditional) ===" >> $LOG_FILE 2>&1
 if [ "${{GIT_PULL_EXIT:-1}}" -eq 0 ] && [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
-    echo "Git updated code ($BEFORE_COMMIT -> $AFTER_COMMIT). Installing/upgrading Python deps..." >> logs/{worker_id}.log 2>&1
-    python -m pip install --upgrade -r requirements.txt >> logs/{worker_id}.log 2>&1 || echo "WARNING: pip install failed" >> logs/{worker_id}.log 2>&1
+    echo "Git updated code ($BEFORE_COMMIT -> $AFTER_COMMIT). Installing/upgrading Python deps..." >> $LOG_FILE 2>&1
+    python -m pip install --upgrade -r requirements.txt >> $LOG_FILE 2>&1 || echo "WARNING: pip install failed" >> $LOG_FILE 2>&1
     # Also install subfolder requirements if present
     if [ -f Wan2GP/requirements.txt ]; then
-        echo "Installing subfolder requirements from Wan2GP/requirements.txt" >> logs/{worker_id}.log 2>&1
-        python -m pip install --upgrade -r Wan2GP/requirements.txt >> logs/{worker_id}.log 2>&1 || echo "WARNING: subfolder pip install failed" >> logs/{worker_id}.log 2>&1
+        echo "Installing subfolder requirements from Wan2GP/requirements.txt" >> $LOG_FILE 2>&1
+        python -m pip install --upgrade -r Wan2GP/requirements.txt >> $LOG_FILE 2>&1 || echo "WARNING: subfolder pip install failed" >> $LOG_FILE 2>&1
     else
-        echo "No subfolder requirements found at Wan2GP/requirements.txt" >> logs/{worker_id}.log 2>&1
+        echo "No subfolder requirements found at Wan2GP/requirements.txt" >> $LOG_FILE 2>&1
     fi
 else
-    echo "No repo updates detected or git pull failed; skipping pip install" >> logs/{worker_id}.log 2>&1
+    echo "No repo updates detected or git pull failed; skipping pip install" >> $LOG_FILE 2>&1
 fi
 
 # Verify worker.py exists
-echo "=== CHECKING FILES ===" >> logs/{worker_id}.log 2>&1
-ls -la worker.py >> logs/{worker_id}.log 2>&1
+echo "=== CHECKING FILES ===" >> $LOG_FILE 2>&1
+ls -la worker.py >> $LOG_FILE 2>&1
 
 # Test Python import
-echo "=== TESTING PYTHON ===" >> logs/{worker_id}.log 2>&1
-timeout 10 python -c "import sys; print('Python can start'); print('sys.path:', sys.path[:3])" >> logs/{worker_id}.log 2>&1 || echo "Python import test failed" >> logs/{worker_id}.log 2>&1
+echo "=== TESTING PYTHON ===" >> $LOG_FILE 2>&1
+timeout 10 python -c "import sys; print('Python can start'); print('sys.path:', sys.path[:3])" >> $LOG_FILE 2>&1 || echo "Python import test failed" >> $LOG_FILE 2>&1
 
 # Final pre-flight checks before starting worker
-echo "=== PRE-FLIGHT CHECKS ===" >> logs/{worker_id}.log 2>&1
-echo "✅ Checking virtual environment..." >> logs/{worker_id}.log 2>&1
-echo "VIRTUAL_ENV: $VIRTUAL_ENV" >> logs/{worker_id}.log 2>&1
-echo "Python path: $(which python)" >> logs/{worker_id}.log 2>&1
-echo "Python version: $(python --version)" >> logs/{worker_id}.log 2>&1
+echo "=== PRE-FLIGHT CHECKS ===" >> $LOG_FILE 2>&1
+echo "✅ Checking virtual environment..." >> $LOG_FILE 2>&1
+echo "VIRTUAL_ENV: $VIRTUAL_ENV" >> $LOG_FILE 2>&1
+echo "Python path: $(which python)" >> $LOG_FILE 2>&1
+echo "Python version: $(python --version)" >> $LOG_FILE 2>&1
 
-echo "✅ Checking worker.py..." >> logs/{worker_id}.log 2>&1
+echo "✅ Checking worker.py..." >> $LOG_FILE 2>&1
 if [ -f worker.py ]; then
-    echo "worker.py exists ($(wc -l < worker.py) lines)" >> logs/{worker_id}.log 2>&1
+    echo "worker.py exists ($(wc -l < worker.py) lines)" >> $LOG_FILE 2>&1
 else
-    echo "❌ ERROR: worker.py not found!" >> logs/{worker_id}.log 2>&1
+    echo "❌ ERROR: worker.py not found!" >> $LOG_FILE 2>&1
     exit 1
 fi
 
-echo "✅ Testing Python imports..." >> logs/{worker_id}.log 2>&1
-python -c "import sys, os; print('Python working, sys.path has', len(sys.path), 'entries')" >> logs/{worker_id}.log 2>&1 || echo "❌ Python import test failed" >> logs/{worker_id}.log 2>&1
+echo "✅ Testing Python imports..." >> $LOG_FILE 2>&1
+python -c "import sys, os; print('Python working, sys.path has', len(sys.path), 'entries')" >> $LOG_FILE 2>&1 || echo "❌ Python import test failed" >> $LOG_FILE 2>&1
 
-echo "✅ Checking environment variables..." >> logs/{worker_id}.log 2>&1
-echo "WORKER_ID: $WORKER_ID" >> logs/{worker_id}.log 2>&1
-echo "SUPABASE_URL: ${{SUPABASE_URL:0:30}}..." >> logs/{worker_id}.log 2>&1
-echo "SUPABASE_ANON_KEY: ${{SUPABASE_ANON_KEY:0:20}}..." >> logs/{worker_id}.log 2>&1
-echo "SUPABASE_SERVICE_ROLE_KEY: ${{SUPABASE_SERVICE_ROLE_KEY:0:20}}..." >> logs/{worker_id}.log 2>&1
+echo "✅ Checking environment variables..." >> $LOG_FILE 2>&1
+echo "WORKER_ID: $WORKER_ID" >> $LOG_FILE 2>&1
+echo "SUPABASE_URL: ${{SUPABASE_URL:0:30}}..." >> $LOG_FILE 2>&1
+echo "SUPABASE_ANON_KEY: ${{SUPABASE_ANON_KEY:0:20}}..." >> $LOG_FILE 2>&1
+echo "SUPABASE_SERVICE_ROLE_KEY: ${{SUPABASE_SERVICE_ROLE_KEY:0:20}}..." >> $LOG_FILE 2>&1
 
 # Start the actual worker process
-echo "=== STARTING MAIN WORKER ===" >> logs/{worker_id}.log 2>&1
-WORKER_CMD="python worker.py --db-type supabase --supabase-url $SUPABASE_URL --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID"
-echo "Command: $WORKER_CMD" >> logs/{worker_id}.log 2>&1
-echo "Starting at: $(date)" >> logs/{worker_id}.log 2>&1
+echo "=== STARTING MAIN WORKER ===" >> $LOG_FILE 2>&1
+WORKER_CMD="python worker.py --supabase-url $SUPABASE_URL --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID"
+echo "Command: $WORKER_CMD" >> $LOG_FILE 2>&1
+echo "Starting at: $(date)" >> $LOG_FILE 2>&1
 
 # Start worker in background with comprehensive logging
-nohup $WORKER_CMD >> logs/{worker_id}.log 2>&1 &
+nohup $WORKER_CMD >> $LOG_FILE 2>&1 &
 WORKER_PID=$!
 
-echo "✅ Worker process started with PID: $WORKER_PID at $(date)" >> logs/{worker_id}.log 2>&1
+echo "✅ Worker process started with PID: $WORKER_PID at $(date)" >> $LOG_FILE 2>&1
 
 # Give the worker a moment to start and check if it's still running
 sleep 2
 if kill -0 $WORKER_PID 2>/dev/null; then
-    echo "✅ Worker process $WORKER_PID is still running after 2 seconds" >> logs/{worker_id}.log 2>&1
+    echo "✅ Worker process $WORKER_PID is still running after 2 seconds" >> $LOG_FILE 2>&1
 else
-    echo "❌ ERROR: Worker process $WORKER_PID died immediately!" >> logs/{worker_id}.log 2>&1
-    echo "Exit status was: $?" >> logs/{worker_id}.log 2>&1
+    echo "❌ ERROR: Worker process $WORKER_PID died immediately!" >> $LOG_FILE 2>&1
+    echo "Exit status was: $?" >> $LOG_FILE 2>&1
 fi
 
-echo "=========================================" >> logs/{worker_id}.log 2>&1
-echo "🏁 STARTUP SCRIPT COMPLETED SUCCESSFULLY" >> logs/{worker_id}.log 2>&1
-echo "=========================================" >> logs/{worker_id}.log 2>&1
+echo "=========================================" >> $LOG_FILE 2>&1
+echo "🏁 STARTUP SCRIPT COMPLETED SUCCESSFULLY" >> $LOG_FILE 2>&1
+echo "=========================================" >> $LOG_FILE 2>&1
 """
 
         # Write the script to a temporary file and execute it
