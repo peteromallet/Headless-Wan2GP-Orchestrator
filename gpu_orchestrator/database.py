@@ -313,12 +313,14 @@ class DatabaseClient:
             return []
     
     async def reset_orphaned_tasks(self, failed_worker_ids: List[str]) -> int:
-        """Reset tasks from failed workers back to queued status (excludes orchestrator tasks)."""
+        """Reset tasks from failed workers back to queued status (includes orchestrator tasks with assigned workers)."""
         try:
             if not failed_worker_ids:
                 return 0
             
-            # First, find all tasks from these workers that need to be reset
+            # Find all tasks from these workers that need to be reset
+            # Since we're explicitly looking for tasks assigned to failed workers,
+            # we include orchestrator tasks - if they have a worker_id, they should be reset
             tasks_result = self.supabase.table('tasks').select('id, task_type').eq('status', 'In Progress').in_('worker_id', failed_worker_ids).lt('attempts', 3).execute()
             
             if not tasks_result.data:
@@ -328,20 +330,10 @@ class DatabaseClient:
                     logger.debug(f"No orphaned tasks found for {len(failed_worker_ids)} workers")
                 return 0
             
-            # Filter out orchestrator tasks
-            non_orchestrator_tasks = [
-                task for task in tasks_result.data 
-                if '_orchestrator' not in task.get('task_type', '').lower()
-            ]
+            # Reset all orphaned tasks (including orchestrator tasks)
+            task_ids = [task['id'] for task in tasks_result.data]
+            orchestrator_task_count = sum(1 for task in tasks_result.data if '_orchestrator' in task.get('task_type', '').lower())
             
-            orchestrator_tasks_skipped = len(tasks_result.data) - len(non_orchestrator_tasks)
-            
-            if not non_orchestrator_tasks:
-                logger.debug(f"Found {len(tasks_result.data)} orphaned tasks, but all are orchestrator tasks - skipping reset")
-                return 0
-            
-            # Reset the non-orchestrator tasks
-            task_ids = [task['id'] for task in non_orchestrator_tasks]
             reset_result = self.supabase.table('tasks').update({
                 'status': 'Queued',
                 'worker_id': None,
@@ -359,8 +351,8 @@ class DatabaseClient:
                 else:
                     log_msg = f"Reset {count} orphaned tasks from {len(failed_worker_ids)} workers"
                 
-                if orchestrator_tasks_skipped > 0:
-                    log_msg += f" (excluded {orchestrator_tasks_skipped} orchestrator tasks)"
+                if orchestrator_task_count > 0:
+                    log_msg += f" (including {orchestrator_task_count} orchestrator tasks)"
                 
                 logger.info(log_msg)
             elif failed_worker_ids:

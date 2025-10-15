@@ -334,8 +334,8 @@ class RunpodClient:
         self.worker_image = os.getenv("RUNPOD_WORKER_IMAGE", "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04")
         self.storage_name = os.getenv("RUNPOD_STORAGE_NAME")  # Like "Peter" in your example
         self.volume_mount_path = os.getenv("RUNPOD_VOLUME_MOUNT_PATH", "/workspace")
-        self.disk_size_gb = int(os.getenv("RUNPOD_DISK_SIZE_GB", "20"))
-        self.container_disk_gb = int(os.getenv("RUNPOD_CONTAINER_DISK_GB", "10"))
+        self.disk_size_gb = int(os.getenv("RUNPOD_DISK_SIZE_GB", "50"))
+        self.container_disk_gb = int(os.getenv("RUNPOD_CONTAINER_DISK_GB", "50"))
         
         # SSH configuration for worker access (both keys like user's example)
         self.ssh_public_key_path = os.getenv("RUNPOD_SSH_PUBLIC_KEY_PATH")

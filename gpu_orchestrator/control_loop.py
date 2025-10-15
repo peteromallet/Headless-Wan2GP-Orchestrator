@@ -116,6 +116,13 @@ class OrchestratorControlLoop:
             # Increment cycle counter
             self.cycle_count += 1
             
+            # Set cycle number in logging context for database logging
+            try:
+                from logging_config import set_current_cycle
+                set_current_cycle(self.cycle_count)
+            except Exception:
+                pass  # Database logging not enabled, that's okay
+            
             # Visual separator for continuous mode
             print("\n" + "="*80)
             print(f"🔄 ORCHESTRATOR CYCLE #{self.cycle_count}")
@@ -334,94 +341,87 @@ class OrchestratorControlLoop:
             active_workers = [w for w in workers if w['status'] == 'active']
             for worker in active_workers:
                 try:
-                    # First, check if worker has completed any tasks recently
-                    # This serves as an implicit heartbeat
-                    recent_completions = await self._check_recent_task_completions(worker['id'])
+                    # Check if worker has active tasks assigned
+                    # Note: Only the WORKER should update its own heartbeat!
+                    # The orchestrator must NOT update worker heartbeats (would defeat the purpose)
+                    has_active_task = await self.db.has_running_tasks(worker['id'])
                     
-                    if recent_completions > 0:
-                        # Worker completed tasks recently - update heartbeat
-                        await self.db.update_worker_heartbeat(worker['id'])
-                        logger.debug(f"Updated heartbeat for worker {worker['id']} - completed {recent_completions} tasks")
-                    else:
-                        # Worker hasn't completed tasks recently - check if it has active tasks assigned
-                        has_active_task = await self.db.has_running_tasks(worker['id'])
-                        
-                        if has_active_task:
-                            # Worker has tasks assigned - ALWAYS check heartbeat regardless of queued_count
-                            # This catches frozen workers even when user concurrency limits hide queued tasks
-                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Has active task, checking heartbeat")
-                            last_heartbeat = worker.get('last_heartbeat')
-                            if last_heartbeat:
-                                heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
-                                if heartbeat_dt.tzinfo is None:
-                                    heartbeat_dt = heartbeat_dt.replace(tzinfo=timezone.utc)
-                                
-                                heartbeat_age = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
-                                if heartbeat_age > self.gpu_idle_timeout:
-                                    logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)")
-                                    await self._mark_worker_error(worker, f'Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)')
-                                    summary['actions']['workers_failed'] += 1
-                                    continue
-                                else:
-                                    logger.debug(f"Worker {worker['id']} has active tasks and recent heartbeat ({heartbeat_age:.0f}s old)")
-                            else:
-                                # No heartbeat but has active tasks - mark as error immediately
-                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat with active tasks")
-                                await self._mark_worker_error(worker, 'No heartbeat with active tasks')
+                    if has_active_task:
+                        # Worker has tasks assigned - ALWAYS check heartbeat regardless of queued_count
+                        # This catches frozen workers even when user concurrency limits hide queued tasks
+                        logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Has active task, checking heartbeat")
+                        last_heartbeat = worker.get('last_heartbeat')
+                        if last_heartbeat:
+                            heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+                            if heartbeat_dt.tzinfo is None:
+                                heartbeat_dt = heartbeat_dt.replace(tzinfo=timezone.utc)
+                            
+                            heartbeat_age = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
+                            if heartbeat_age > self.gpu_idle_timeout:
+                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)")
+                                await self._mark_worker_error(worker, f'Stale heartbeat with active tasks ({heartbeat_age:.0f}s old)')
                                 summary['actions']['workers_failed'] += 1
                                 continue
-                        elif queued_count > 0:
-                            # No active task but tasks are queued - check if worker is idle
-                            logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: {queued_count} tasks queued but worker is idle")
-                            last_heartbeat = worker.get('last_heartbeat')
-                            if last_heartbeat:
-                                heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
-                                if heartbeat_dt.tzinfo is None:
-                                    heartbeat_dt = heartbeat_dt.replace(tzinfo=timezone.utc)
-                                
-                                heartbeat_age = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
-                                logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: Idle worker with tasks queued. Heartbeat age: {heartbeat_age:.0f}s, Timeout: {self.gpu_idle_timeout}s")
-                                if heartbeat_age > self.gpu_idle_timeout:
-                                    logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Marking as failed - idle too long with tasks available (heartbeat: {heartbeat_age:.0f}s > {self.gpu_idle_timeout}s)")
-                                    await self._mark_worker_error(worker, 'Idle with tasks queued')
-                                    summary['actions']['workers_failed'] += 1
-                                    continue
                             else:
-                                # No heartbeat ever received with tasks queued
-                                worker_age = (datetime.now(timezone.utc) - datetime.fromisoformat(worker['created_at'].replace('Z', '+00:00'))).total_seconds()
-                                if worker_age > self.gpu_idle_timeout:
-                                    logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat or activity with tasks queued")
-                                    await self._mark_worker_error(worker, 'No heartbeat or activity')
-                                    summary['actions']['workers_failed'] += 1
-                                    continue
+                                logger.debug(f"Worker {worker['id']} has active tasks and recent heartbeat ({heartbeat_age:.0f}s old)")
                         else:
-                            # No active task and no queued tasks - worker is idle
-                            # Check if idle too long (regardless of capacity to prevent indefinite idle workers)
-                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued or assigned, checking idle timeout")
+                            # No heartbeat but has active tasks - mark as error immediately
+                            logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat with active tasks")
+                            await self._mark_worker_error(worker, 'No heartbeat with active tasks')
+                            summary['actions']['workers_failed'] += 1
+                            continue
+                    elif queued_count > 0:
+                        # No active task but tasks are queued - check if worker is idle
+                        logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: {queued_count} tasks queued but worker is idle")
+                        last_heartbeat = worker.get('last_heartbeat')
+                        if last_heartbeat:
+                            heartbeat_dt = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+                            if heartbeat_dt.tzinfo is None:
+                                heartbeat_dt = heartbeat_dt.replace(tzinfo=timezone.utc)
                             
-                            # Check if worker has been idle too long
-                            if await self._is_worker_idle_with_timeout(worker, self.gpu_idle_timeout):
-                                # Worker has been idle longer than timeout
-                                # Only terminate if we're above minimum capacity OR if idle is excessive
-                                current_active_count = len([w for w in workers if w['status'] == 'active'])
-                                
-                                if current_active_count > self.min_active_gpus:
-                                    logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s with no queued tasks, terminating (above min capacity)")
-                                    await self._mark_worker_error(worker, f'Idle timeout ({self.gpu_idle_timeout}s) with no work available')
-                                    summary['actions']['workers_failed'] += 1
-                                    continue
-                                else:
-                                    logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s but at minimum capacity, keeping alive")
-                            
-                            # Perform basic health check (pod responsive?)
-                            if await self._perform_basic_health_check(worker):
-                                logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check, monitoring idle time")
-                            else:
-                                # Worker not responsive
-                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Failed basic health check")
-                                await self._mark_worker_error(worker, 'Failed basic health check')
+                            heartbeat_age = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
+                            logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: Idle worker with tasks queued. Heartbeat age: {heartbeat_age:.0f}s, Timeout: {self.gpu_idle_timeout}s")
+                            if heartbeat_age > self.gpu_idle_timeout:
+                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Marking as failed - idle too long with tasks available (heartbeat: {heartbeat_age:.0f}s > {self.gpu_idle_timeout}s)")
+                                await self._mark_worker_error(worker, 'Idle with tasks queued')
                                 summary['actions']['workers_failed'] += 1
                                 continue
+                        else:
+                            # No heartbeat ever received with tasks queued
+                            worker_age = (datetime.now(timezone.utc) - datetime.fromisoformat(worker['created_at'].replace('Z', '+00:00'))).total_seconds()
+                            if worker_age > self.gpu_idle_timeout:
+                                logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: No heartbeat or activity with tasks queued")
+                                await self._mark_worker_error(worker, 'No heartbeat or activity')
+                                summary['actions']['workers_failed'] += 1
+                                continue
+                    else:
+                        # No active task and no queued tasks - worker is idle
+                        # Check if idle too long (regardless of capacity to prevent indefinite idle workers)
+                        logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: No tasks queued or assigned, checking idle timeout")
+                        
+                        # Check if worker has been idle too long
+                        if await self._is_worker_idle_with_timeout(worker, self.gpu_idle_timeout):
+                            # Worker has been idle longer than timeout
+                            # Only terminate if we're above minimum capacity OR if idle is excessive
+                            current_active_count = len([w for w in workers if w['status'] == 'active'])
+                            
+                            if current_active_count > self.min_active_gpus:
+                                logger.info(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s with no queued tasks, terminating (above min capacity)")
+                                await self._mark_worker_error(worker, f'Idle timeout ({self.gpu_idle_timeout}s) with no work available')
+                                summary['actions']['workers_failed'] += 1
+                                continue
+                            else:
+                                logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Idle for >{self.gpu_idle_timeout}s but at minimum capacity, keeping alive")
+                        
+                        # Perform basic health check (pod responsive?)
+                        if await self._perform_basic_health_check(worker):
+                            logger.debug(f"[WORKER_HEALTH] Worker {worker['id']}: Passed health check, monitoring idle time")
+                        else:
+                            # Worker not responsive
+                            logger.warning(f"[WORKER_HEALTH] Worker {worker['id']}: Failed basic health check")
+                            await self._mark_worker_error(worker, 'Failed basic health check')
+                            summary['actions']['workers_failed'] += 1
+                            continue
                     
                     # Check for stuck tasks
                     running_tasks = await self.db.get_running_tasks_for_worker(worker['id'])
@@ -703,22 +703,160 @@ class OrchestratorControlLoop:
         logger.info(f"💓 HEARTBEAT_CHECK [Worker {worker_id}] ✅ Health check passed")
         return False
     
+    async def _collect_worker_diagnostics(self, worker: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        """Collect comprehensive diagnostic information from a failing worker before termination."""
+        worker_id = worker['id']
+        runpod_id = worker.get('metadata', {}).get('runpod_id')
+        
+        diagnostics = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'worker_id': worker_id,
+            'runpod_id': runpod_id,
+            'error_reason': reason,
+            'collection_success': False
+        }
+        
+        logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] Collecting diagnostic information before termination")
+        
+        try:
+            # 1. Collect worker metadata (VRAM, heartbeat, etc.)
+            metadata = worker.get('metadata', {})
+            diagnostics['last_heartbeat'] = worker.get('last_heartbeat')
+            diagnostics['worker_status'] = worker.get('status')
+            diagnostics['worker_created_at'] = worker.get('created_at')
+            
+            # VRAM information
+            if 'vram_total_mb' in metadata:
+                diagnostics['vram_total_mb'] = metadata['vram_total_mb']
+                diagnostics['vram_used_mb'] = metadata.get('vram_used_mb')
+                diagnostics['vram_timestamp'] = metadata.get('vram_timestamp')
+                if diagnostics['vram_total_mb'] and diagnostics['vram_used_mb']:
+                    diagnostics['vram_usage_percent'] = (diagnostics['vram_used_mb'] / diagnostics['vram_total_mb']) * 100
+                logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] VRAM: {diagnostics.get('vram_used_mb', 0)}/{diagnostics.get('vram_total_mb', 0)} MB ({diagnostics.get('vram_usage_percent', 0):.1f}%)")
+            
+            # 2. Get running tasks information
+            try:
+                running_tasks = await self.db.get_running_tasks_for_worker(worker_id)
+                diagnostics['running_tasks_count'] = len(running_tasks)
+                diagnostics['running_tasks'] = [
+                    {
+                        'id': str(task['id']),
+                        'task_type': task.get('task_type'),
+                        'started_at': task.get('generation_started_at'),
+                        'age_seconds': (datetime.now(timezone.utc) - datetime.fromisoformat(task['generation_started_at'].replace('Z', '+00:00'))).total_seconds() if task.get('generation_started_at') else None
+                    }
+                    for task in running_tasks[:5]  # Limit to first 5 tasks
+                ]
+                logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] Running tasks: {len(running_tasks)}")
+            except Exception as e:
+                logger.warning(f"📋 DIAGNOSTICS [Worker {worker_id}] Could not fetch running tasks: {e}")
+                diagnostics['running_tasks_error'] = str(e)
+            
+            # 3. Get RunPod pod status
+            if runpod_id:
+                try:
+                    pod_status = self.runpod.get_pod_status(runpod_id)
+                    if pod_status:
+                        diagnostics['pod_status'] = {
+                            'desired_status': pod_status.get('desired_status'),
+                            'actual_status': pod_status.get('actual_status'),
+                            'uptime_seconds': pod_status.get('uptime_seconds'),
+                            'cost_per_hr': pod_status.get('cost_per_hr'),
+                            'last_status_change': pod_status.get('last_status_change')
+                        }
+                        logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] Pod status: {pod_status.get('desired_status')} (uptime: {pod_status.get('uptime_seconds', 0)}s)")
+                    else:
+                        logger.warning(f"📋 DIAGNOSTICS [Worker {worker_id}] Could not get pod status from RunPod API")
+                        diagnostics['pod_status_error'] = 'RunPod API returned None'
+                except Exception as e:
+                    logger.warning(f"📋 DIAGNOSTICS [Worker {worker_id}] Error getting pod status: {e}")
+                    diagnostics['pod_status_error'] = str(e)
+                
+                # 4. Try to get git deployment info via SSH (critical for debugging)
+                try:
+                    if runpod_id and metadata.get('ssh_details'):
+                        logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] Fetching git deployment information")
+                        
+                        # Get git commit hash and branch
+                        git_cmd = "cd /workspace/Headless-Wan2GP && git rev-parse HEAD && git rev-parse --abbrev-ref HEAD && git status --porcelain | wc -l"
+                        
+                        try:
+                            result = self.runpod.execute_command_on_worker(runpod_id, git_cmd, timeout=5)
+                            if result:
+                                exit_code, stdout, stderr = result
+                                if exit_code == 0 and stdout:
+                                    lines = stdout.strip().split('\n')
+                                    if len(lines) >= 2:
+                                        diagnostics['git_commit'] = lines[0].strip()
+                                        diagnostics['git_branch'] = lines[1].strip()
+                                        if len(lines) >= 3:
+                                            uncommitted = lines[2].strip()
+                                            diagnostics['git_uncommitted_changes'] = int(uncommitted) if uncommitted.isdigit() else 0
+                                        logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] ✅ Git: {lines[1].strip()}@{lines[0].strip()[:8]}")
+                                else:
+                                    diagnostics['git_info_error'] = f'Command failed: exit {exit_code}'
+                            else:
+                                diagnostics['git_info_error'] = 'SSH command returned None'
+                        except Exception as e:
+                            logger.warning(f"📋 DIAGNOSTICS [Worker {worker_id}] Could not fetch git info: {e}")
+                            diagnostics['git_info_error'] = str(e)
+                    else:
+                        diagnostics['git_info_error'] = 'No SSH details available'
+                except Exception as e:
+                    logger.warning(f"📋 DIAGNOSTICS [Worker {worker_id}] Error collecting git info: {e}")
+                    diagnostics['git_info_error'] = str(e)
+                
+                # 5. Save reference to system_logs for later viewing
+                # NOTE: We don't copy logs here - they're already in system_logs table
+                # The viewer script will query system_logs directly to display logs
+                diagnostics['logs_available_in_system_logs'] = True
+                diagnostics['logs_note'] = 'Worker logs are stored in system_logs table. Use query_logs.py --worker-timeline to view.'
+                logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] Worker logs available in system_logs table")
+            
+            diagnostics['collection_success'] = True
+            logger.info(f"📋 DIAGNOSTICS [Worker {worker_id}] ✅ Diagnostic collection completed successfully")
+            
+        except Exception as e:
+            logger.error(f"📋 DIAGNOSTICS [Worker {worker_id}] ❌ Error collecting diagnostics: {e}")
+            diagnostics['collection_error'] = str(e)
+        
+        return diagnostics
+    
     async def _mark_worker_error(self, worker: Dict[str, Any], reason: str):
         """Mark a worker as error and attempt to terminate it."""
         worker_id = worker['id']
         
         logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] MARKING AS ERROR: {reason}")
         
-        # First, reset any orphaned tasks from this worker before marking it as error
+        # FIRST: Collect comprehensive diagnostics before we lose the worker
+        diagnostics = await self._collect_worker_diagnostics(worker, reason)
+        
+        # Save diagnostics to database in worker metadata
+        try:
+            metadata_update = {
+                'error_reason': reason,
+                'error_time': datetime.now(timezone.utc).isoformat(),
+                'diagnostics': diagnostics
+            }
+            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Saving diagnostic data to database")
+        except Exception as e:
+            logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Failed to prepare diagnostic metadata: {e}")
+            # Fall back to simple error metadata
+            metadata_update = {
+                'error_reason': reason,
+                'error_time': datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Reset any orphaned tasks from this worker before marking it as error
         # This ensures tasks get re-queued immediately and aren't lost
         reset_count = await self.db.reset_orphaned_tasks([worker_id])
         if reset_count > 0:
             logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] Reset {reset_count} orphaned tasks")
         
-        # Mark worker as error in DB
-        success = await self.db.mark_worker_error(worker_id, reason)
+        # Mark worker as error in DB with diagnostics
+        success = await self.db.update_worker_status(worker_id, 'error', metadata_update)
         if success:
-            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ Database updated with error status")
+            logger.info(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ✅ Database updated with error status and diagnostics")
         else:
             logger.error(f"🔄 WORKER_LIFECYCLE [Worker {worker_id}] ❌ Failed to update database with error status")
 
@@ -1145,8 +1283,12 @@ class OrchestratorControlLoop:
         Failsafe check for workers with very stale heartbeats regardless of status.
         This catches edge cases where workers slip through normal health checks.
         Also checks for zombie workers marked as 'terminated' but still running in RunPod.
+        
+        Uses the same timeout as other heartbeat checks (GPU_IDLE_TIMEOUT_SEC) for consistency.
+        All workers should be detected as dead within the same timeframe, regardless of state.
         """
-        FAILSAFE_STALE_THRESHOLD = int(os.getenv("FAILSAFE_STALE_THRESHOLD_SEC", "900"))  # 15 minutes (was 2 hours)
+        # Use same timeout as other heartbeat checks for consistency (default 300s = 5 minutes)
+        FAILSAFE_STALE_THRESHOLD = self.gpu_idle_timeout
         cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=FAILSAFE_STALE_THRESHOLD)
         
         stale_workers = []
@@ -1231,8 +1373,19 @@ class OrchestratorControlLoop:
     
     async def _efficient_zombie_check(self, summary: Dict[str, Any]) -> None:
         """
-        Efficient zombie detection: Check RunPod for active pods starting with 'gpu-'
-        and cross-reference with database. Only runs every 10th cycle to avoid performance issues.
+        Bidirectional zombie detection (runs every 10th cycle):
+        
+        1. Forward check: RunPod pods without DB records (orphaned pods)
+           - Finds pods in RunPod that don't exist in database
+           - Terminates them to prevent billing
+        
+        2. Reverse check: DB workers without RunPod pods (externally terminated)
+           - Finds active/spawning workers in DB that don't exist in RunPod
+           - Marks them as error and resets their tasks
+           - Catches workers manually terminated in RunPod console
+        
+        This provides fast detection (within 5 minutes) of external terminations,
+        much faster than waiting for heartbeat timeout.
         """
         # Only run zombie check every 10th cycle to avoid performance impact
         if self.cycle_count % 10 != 0:
@@ -1284,9 +1437,37 @@ class OrchestratorControlLoop:
                         logger.error(f"ZOMBIE CLEANUP: Error terminating orphaned RunPod {runpod_id}: {e}")
             
             if zombies_found > 0:
-                logger.warning(f"Efficient zombie check: Found and terminated {zombies_found} zombie workers")
+                logger.warning(f"Efficient zombie check: Found and terminated {zombies_found} orphaned RunPod pods")
             else:
-                logger.debug("Efficient zombie check: No zombies found")
+                logger.debug("Efficient zombie check: No orphaned RunPod pods found")
+            
+            # BIDIRECTIONAL CHECK: Find DB workers that don't exist in RunPod (externally terminated)
+            # This catches workers that were manually terminated in RunPod console
+            runpod_pod_ids = {pod.get('id') for pod in gpu_worker_pods}
+            runpod_pod_names = {pod.get('name') for pod in gpu_worker_pods}
+            
+            externally_terminated = 0
+            for worker in db_workers:
+                if worker['status'] in ['active', 'spawning']:
+                    runpod_id = worker.get('metadata', {}).get('runpod_id')
+                    worker_id = worker['id']
+                    
+                    # Check if this worker's RunPod pod still exists
+                    if runpod_id and runpod_id not in runpod_pod_ids and worker_id not in runpod_pod_names:
+                        logger.warning(f"EXTERNALLY TERMINATED: Worker {worker_id} (RunPod {runpod_id}) no longer exists in RunPod")
+                        
+                        # Mark as error and reset any orphaned tasks
+                        try:
+                            await self._mark_worker_error(worker, 'Pod externally terminated - not found in RunPod')
+                            summary['actions']['workers_failed'] += 1
+                            externally_terminated += 1
+                        except Exception as e:
+                            logger.error(f"Error marking externally terminated worker {worker_id}: {e}")
+            
+            if externally_terminated > 0:
+                logger.warning(f"Bidirectional check: Found {externally_terminated} externally terminated workers")
+            else:
+                logger.debug("Bidirectional check: No externally terminated workers found")
                 
         except Exception as e:
             logger.error(f"Error during efficient zombie check: {e}")

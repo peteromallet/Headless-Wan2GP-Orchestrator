@@ -13,8 +13,9 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # Configure structured logging before importing internal modules that emit logs
-from logging_config import setup_logging
+from logging_config import setup_logging, set_current_cycle, get_db_logging_stats
 
+# Initial setup without database client
 setup_logging()
 
 from control_loop import OrchestratorControlLoop
@@ -105,9 +106,21 @@ async def run_single_cycle():
             }
             print(json.dumps(error_summary, indent=2))
             return error_summary
-            
+        
+        # Initialize orchestrator (which has database client)
         orchestrator = OrchestratorControlLoop()
+        
+        # Re-initialize logging with database client if DB logging is enabled
+        from logging_config import setup_logging as reinit_logging
+        reinit_logging(db_client=orchestrator.db, source_type="orchestrator_gpu")
+        
+        # Run cycle
         summary = await orchestrator.run_single_cycle()
+        
+        # Add database logging stats if available
+        db_stats = get_db_logging_stats()
+        if db_stats:
+            summary['db_logging_stats'] = db_stats
         
         # Output structured JSON for logging/monitoring
         print(json.dumps(summary, indent=2))
@@ -139,14 +152,27 @@ async def run_continuous_loop():
     
     orchestrator = OrchestratorControlLoop()
     
+    # Re-initialize logging with database client if DB logging is enabled
+    from logging_config import setup_logging as reinit_logging
+    reinit_logging(db_client=orchestrator.db, source_type="orchestrator_gpu")
+    
     while True:
         try:
             cycle_start = datetime.now(timezone.utc)
+            
+            # Set current cycle for logging context
+            set_current_cycle(orchestrator.cycle_count + 1)
             
             summary = await orchestrator.run_single_cycle()
             
             # Log summary
             logger.info(f"Cycle completed: {summary['actions']}")
+            
+            # Log database logging stats periodically (every 10 cycles)
+            if orchestrator.cycle_count % 10 == 0:
+                db_stats = get_db_logging_stats()
+                if db_stats:
+                    logger.info(f"📊 Database logging stats: {db_stats}")
             
             # Calculate sleep time to maintain consistent interval
             cycle_duration = (datetime.now(timezone.utc) - cycle_start).total_seconds()
@@ -211,10 +237,15 @@ def main():
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        help="Enable debug mode (same as --verbose)"
+    )
     
     args = parser.parse_args()
     
-    if args.verbose:
+    if args.verbose or args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
     try:
