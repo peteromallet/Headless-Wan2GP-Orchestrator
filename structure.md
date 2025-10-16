@@ -131,20 +131,16 @@ python worker.py --main-output-dir ./outputs
 | `fetch_task_logs.py` | **[Debug]** Extract task-specific timeline from orchestrator.log with context |
 | `show_termination_config.py` | Display current worker termination timing configuration and logic |
 
-**Debugging:** Use `analyze_recent_tasks.py` for task overview, `analyze_task_failures.py` for comprehensive failure analysis, `fetch_worker_logs.py` for worker/infrastructure issues, and `fetch_task_logs.py` for task lifecycle analysis. All handle terminated resources via S3 archives.
+**Application Debugging (Task Failures, Worker Crashes, Log Analysis):**
+- `query_logs.py` - Query centralized `system_logs` table by worker/task/time
+- `view_worker_diagnostics.py` - View diagnostics collected when workers fail (VRAM, pod status, tasks)
+- All worker and orchestrator logs stored in `system_logs` with 48hr retention
+- Example: `python query_logs.py --worker-timeline <worker_id>`
 
-**Progress Monitoring:** The `fetch_worker_logs.py` script intelligently adapts based on worker state and provides comprehensive timing analysis:
-- **Real-time progress**: Shows denoising step completion (e.g., "21/30 – Denoising", "2/8 – Denoising")
-- **Performance metrics**: Time per step estimates (e.g., "25.7s/it") and ETA calculations  
-- **Model loading status**: Memory management, LoRA loading, VRAM usage
-- **Health indicators**: SSH connectivity, process status, stuck task detection
-- **Timeline analysis**: Worker lifecycle from spawn to termination
-
-**Timing Analysis for Issue Detection:**
-- **Normal progress**: Steady step advancement every 25-30 seconds
-- **Stuck workers**: No progress updates for >5 minutes, same step repeated
-- **Memory issues**: Model loading failures, VRAM allocation errors  
-- **Termination detection**: Workers marked as "error" due to stuck tasks (>20min timeout)
+**Infrastructure Debugging (SSH, Deployment, Network Issues):**
+- `fetch_worker_logs.py` - Git status, system logs, SSH connectivity testing
+- `comprehensive_diagnostics.py` - Environment audit, network tests, deployment verification
+- Use these for pod provisioning issues, NOT for application-level errors
 
 Scripts are **idempotent** and safe to run locally – they rely on env-vars for credentials.
 
