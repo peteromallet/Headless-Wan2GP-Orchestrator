@@ -34,24 +34,24 @@ async def download_url_content(client: httpx.AsyncClient, url: str) -> bytes:
 
 async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str, first_frame_data: str = None) -> str:
     """
-    Upload file data to Supabase storage via the complete-task Edge Function.
-    This function also marks the task as complete in the database.
+    Upload file data to Supabase storage.
+    Uses optimized path based on file size:
+    - Files <2MB: Direct base64 upload to complete_task (fewer round trips)
+    - Files >=2MB: Pre-signed URL upload (no base64 overhead, no Edge Function limits)
     Returns the public URL of the uploaded file.
     """
     try:
         supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        edge_url = f"{supabase_url}/functions/v1/complete_task"
+        complete_task_url = f"{supabase_url}/functions/v1/complete_task"
         
-        if not edge_url:
+        if not supabase_url:
             raise Exception("SUPABASE_URL not configured")
             
+        auth_token = os.getenv('SUPABASE_ACCESS_TOKEN') or os.getenv('SUPABASE_SERVICE_ROLE_KEY')
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('SUPABASE_ACCESS_TOKEN') or os.getenv('SUPABASE_SERVICE_ROLE_KEY')}"
+            "Authorization": f"Bearer {auth_token}"
         }
-        
-        # Encode file data as base64
-        file_base64 = base64.b64encode(file_data).decode('utf-8')
         
         # Sanitize filename
         safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-").strip()
@@ -61,53 +61,169 @@ async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, fi
             ext = Path(parsed_url.path).suffix if parsed_url else ".bin"
             safe_filename = f"task_{task_id}{ext}"
         
-        payload = {
-            "task_id": task_id,
-            "file_data": file_base64,
-            "filename": safe_filename
-        }
+        # Guess content type from filename
+        content_type = mimetypes.guess_type(safe_filename)[0] or 'application/octet-stream'
         
-        # Include first frame data if provided (matching original approach)
-        if first_frame_data:
-            payload["first_frame_data"] = first_frame_data
-            # Generate screenshot filename based on main filename
-            base_name = Path(safe_filename).stem
-            payload["first_frame_filename"] = f"{base_name}_screenshot.png"
+        file_size_mb = len(file_data) / (1024 * 1024)
+        logger.info(f"Uploading {len(file_data)} bytes ({file_size_mb:.2f}MB) to Supabase storage as {safe_filename} (type: {content_type})")
         
-        logger.info(f"Uploading {len(file_data)} bytes to Supabase storage as {safe_filename}")
+        # Use optimized path based on file size
+        # Small files (<2MB): Use direct base64 upload (fewer round trips, faster for small files)
+        # Large files (>=2MB): Use pre-signed URLs (no base64 overhead, no Edge Function limits)
+        SIZE_THRESHOLD_MB = 2.0
         
-        # Log payload size for debugging
-        payload_size = len(str(payload).encode('utf-8'))
-        logger.info(f"Total JSON payload size: {payload_size} bytes")
-        logger.info(f"Payload keys being sent: {list(payload.keys())}")
-        if first_frame_data:
-            logger.info(f"Payload includes first_frame_data of {len(first_frame_data)} chars")
-            logger.info(f"Generated first_frame_filename: {payload.get('first_frame_filename', 'NOT SET!')}")
-        
-        response = await client.post(edge_url, headers=headers, json=payload, timeout=120)
-        
-        # Log response details before raising for status
-        logger.info(f"Upload response: status={response.status_code}, content-length={response.headers.get('content-length', 'unknown')}")
-        if response.status_code != 200:
-            response_text = response.text
-            logger.error(f"Upload failed with status {response.status_code}: {response_text}")
+        if file_size_mb < SIZE_THRESHOLD_MB:
+            # OLD PATH: Direct base64 upload to complete_task (optimal for small files)
+            logger.info(f"Using direct upload path for {file_size_mb:.2f}MB file (< {SIZE_THRESHOLD_MB}MB threshold)")
+            return await _upload_direct_base64(client, task_id, file_data, safe_filename, first_frame_data, headers, complete_task_url)
+        else:
+            # NEW PATH: Pre-signed URL upload (optimal for large files)
+            logger.info(f"Using pre-signed URL path for {file_size_mb:.2f}MB file (>= {SIZE_THRESHOLD_MB}MB threshold)")
+            generate_upload_url = f"{supabase_url}/functions/v1/generate-upload-url"
+            return await _upload_presigned_url(client, task_id, file_data, safe_filename, content_type, first_frame_data, headers, generate_upload_url, complete_task_url)
             
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Extract the public URL from the response
-        public_url = result.get("public_url") or result.get("output_location")
-        
-        if not public_url:
-            raise Exception(f"No public URL returned from upload: {result}")
-            
-        logger.info(f"Successfully uploaded to Supabase: {public_url}")
-        return public_url
-        
     except Exception as e:
         logger.error(f"Failed to upload to Supabase storage: {e}")
         raise
+
+
+async def _upload_direct_base64(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str, first_frame_data: str, headers: Dict[str, str], complete_task_url: str) -> str:
+    """
+    Upload file using direct base64 encoding to complete_task Edge Function.
+    Optimal for files <2MB (fewer round trips despite base64 overhead).
+    """
+    # Encode file data as base64
+    file_base64 = base64.b64encode(file_data).decode('utf-8')
+    
+    payload = {
+        "task_id": task_id,
+        "file_data": file_base64,
+        "filename": filename
+    }
+    
+    # Include first frame data if provided
+    if first_frame_data:
+        payload["first_frame_data"] = first_frame_data
+        # Generate screenshot filename based on main filename
+        base_name = Path(filename).stem
+        payload["first_frame_filename"] = f"{base_name}_screenshot.png"
+    
+    logger.info(f"Direct upload: {len(file_data)} bytes -> {len(file_base64)} chars base64")
+    
+    response = await client.post(complete_task_url, headers=headers, json=payload, timeout=120)
+    
+    if response.status_code != 200:
+        response_text = response.text
+        logger.error(f"Direct upload failed with status {response.status_code}: {response_text}")
+        
+    response.raise_for_status()
+    
+    result = response.json()
+    
+    # Extract the public URL from the response
+    public_url = result.get("public_url") or result.get("output_location")
+    
+    if not public_url:
+        raise Exception(f"No public URL returned from upload: {result}")
+        
+    logger.info(f"Direct upload successful: {public_url}")
+    return public_url
+
+
+async def _upload_presigned_url(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str, content_type: str, first_frame_data: str, headers: Dict[str, str], generate_upload_url: str, complete_task_url: str) -> str:
+    """
+    Upload file using pre-signed URLs.
+    Optimal for files >=2MB (no base64 overhead, bypasses Edge Function limits).
+    """
+    # Step 1: Generate pre-signed upload URL
+    generate_payload = {
+        "task_id": task_id,
+        "filename": filename,
+        "content_type": content_type,
+        "generate_thumbnail_url": bool(first_frame_data)  # Request thumbnail URL if we have screenshot
+    }
+    
+    logger.info(f"Requesting pre-signed upload URL for task {task_id}")
+    response = await client.post(generate_upload_url, headers=headers, json=generate_payload, timeout=30)
+    response.raise_for_status()
+    
+    upload_urls = response.json()
+    main_upload_url = upload_urls.get("upload_url")
+    storage_path = upload_urls.get("storage_path")
+    thumbnail_upload_url = upload_urls.get("thumbnail_upload_url")
+    thumbnail_storage_path = upload_urls.get("thumbnail_storage_path")
+    
+    if not main_upload_url or not storage_path:
+        raise Exception(f"Invalid response from generate-upload-url: {upload_urls}")
+    
+    logger.info(f"Generated upload URL for storage path: {storage_path}")
+    
+    # Step 2: Upload main file directly to storage (binary upload, no base64!)
+    upload_headers = {
+        "Content-Type": content_type,
+        "x-upsert": "true"  # Allow overwriting if file exists
+    }
+    
+    logger.info(f"Uploading {len(file_data)} bytes directly to storage...")
+    upload_response = await client.put(main_upload_url, content=file_data, headers=upload_headers, timeout=120)
+    
+    if upload_response.status_code not in (200, 201):
+        error_text = upload_response.text
+        logger.error(f"Direct storage upload failed with status {upload_response.status_code}: {error_text}")
+        upload_response.raise_for_status()
+    
+    logger.info(f"Successfully uploaded main file to storage")
+    
+    # Step 3: Upload thumbnail if provided
+    if first_frame_data and thumbnail_upload_url and thumbnail_storage_path:
+        try:
+            # Decode base64 screenshot data
+            screenshot_bytes = base64.b64decode(first_frame_data)
+            
+            thumbnail_headers = {
+                "Content-Type": "image/png",
+                "x-upsert": "true"
+            }
+            
+            logger.info(f"Uploading {len(screenshot_bytes)} byte thumbnail to storage...")
+            thumb_response = await client.put(thumbnail_upload_url, content=screenshot_bytes, headers=thumbnail_headers, timeout=60)
+            
+            if thumb_response.status_code not in (200, 201):
+                logger.warning(f"Thumbnail upload failed with status {thumb_response.status_code}: {thumb_response.text}")
+            else:
+                logger.info(f"Successfully uploaded thumbnail to {thumbnail_storage_path}")
+        except Exception as thumb_error:
+            # Don't fail the whole upload if thumbnail fails
+            logger.warning(f"Thumbnail upload failed (non-fatal): {thumb_error}")
+    
+    # Step 4: Mark task complete with storage path
+    complete_payload = {
+        "task_id": task_id,
+        "storage_path": storage_path
+    }
+    
+    # Include thumbnail path if uploaded
+    if first_frame_data and thumbnail_storage_path:
+        complete_payload["thumbnail_storage_path"] = thumbnail_storage_path
+    
+    logger.info(f"Marking task {task_id} complete with storage_path: {storage_path}")
+    complete_response = await client.post(complete_task_url, headers=headers, json=complete_payload, timeout=30)
+    
+    if complete_response.status_code != 200:
+        error_text = complete_response.text
+        logger.error(f"Complete task failed with status {complete_response.status_code}: {error_text}")
+        complete_response.raise_for_status()
+    
+    result = complete_response.json()
+    
+    # Extract the public URL from the response
+    public_url = result.get("public_url") or result.get("output_location")
+    
+    if not public_url:
+        raise Exception(f"No public URL returned from complete_task: {result}")
+        
+    logger.info(f"Pre-signed URL upload successful: {public_url}")
+    return public_url
 
 
 async def download_and_upload_to_supabase(client: httpx.AsyncClient, task_id: str, external_url: str, extract_screenshot: bool = True) -> Dict[str, str]:

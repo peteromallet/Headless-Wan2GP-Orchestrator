@@ -43,20 +43,65 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
             raise Exception(f"Invalid JSON in params field: {e}")
     
     if task_type == "qwen_image_edit" or params.get("api_type") == "wavespeed":
-        # Wavespeed AI image editing using the new qwen-image/edit-plus endpoint
-        endpoint_path = params.get("wavespeed_endpoint", "wavespeed-ai/qwen-image/edit-plus")
-        logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
+        # Check if loras are present to determine which endpoint to use
+        loras = params.get("loras", [])
+        has_loras = bool(loras)
         
-        # Map parameters to match the new edit-plus API format
-        image_url = params.get("image", "")
-        wavespeed_params = {
-            "enable_base64_output": params.get("enable_base64_output", False),
-            "enable_sync_mode": params.get("enable_sync_mode", False),
-            "images": [image_url] if image_url else [],  # API expects "images" as array
-            "output_format": params.get("output_format", "jpeg"),
-            "prompt": params.get("prompt", ""),
-            "seed": params.get("seed", -1)
-        }
+        if has_loras:
+            # Use the edit-plus-lora endpoint when loras are present
+            endpoint_path = "wavespeed-ai/qwen-image/edit-plus-lora"
+            logger.info(f"Calling Wavespeed API endpoint with LoRAs: {endpoint_path}")
+            
+            # Map parameters to match the edit-plus-lora API format
+            image_url = params.get("image", "")
+            wavespeed_params = {
+                "enable_base64_output": params.get("enable_base64_output", False),
+                "enable_sync_mode": params.get("enable_sync_mode", False),
+                "images": [image_url] if image_url else [],  # API expects "images" as array
+                "output_format": params.get("output_format", "jpeg"),
+                "prompt": params.get("prompt", ""),
+                "seed": params.get("seed", -1),
+                "loras": []
+            }
+            
+            # Add size parameter if resolution is provided
+            resolution = params.get("resolution", "")
+            if resolution:
+                # Convert formats like "768x576" to "768*576" for the API
+                size = resolution.replace("x", "*")
+                wavespeed_params["size"] = size
+                logger.info(f"Using resolution/size: {size}")
+            
+            # Map loras - support both {"url": ..., "strength": ...} and {"path": ..., "scale": ...} formats
+            for lora in loras:
+                if isinstance(lora, dict):
+                    # Support both "url"/"strength" and "path"/"scale" formats
+                    lora_url = lora.get("url") or lora.get("path", "")
+                    lora_strength = lora.get("strength", lora.get("scale", 1.0))
+                    
+                    if lora_url:
+                        wavespeed_params["loras"].append({
+                            "path": lora_url,
+                            "scale": float(lora_strength)
+                        })
+                        logger.info(f"Added LoRA: {lora_url} with strength {lora_strength}")
+            
+            logger.info(f"Processing with {len(wavespeed_params['loras'])} LoRAs")
+        else:
+            # Use the standard edit-plus endpoint without loras
+            endpoint_path = params.get("wavespeed_endpoint", "wavespeed-ai/qwen-image/edit-plus")
+            logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
+            
+            # Map parameters to match the edit-plus API format
+            image_url = params.get("image", "")
+            wavespeed_params = {
+                "enable_base64_output": params.get("enable_base64_output", False),
+                "enable_sync_mode": params.get("enable_sync_mode", False),
+                "images": [image_url] if image_url else [],  # API expects "images" as array
+                "output_format": params.get("output_format", "jpeg"),
+                "prompt": params.get("prompt", ""),
+                "seed": params.get("seed", -1)
+            }
         
         result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
         
@@ -194,6 +239,39 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
                     "scale": float(scale)
                 })
             logger.info(f"Added {len(additional_loras)} LoRAs to request")
+        
+        result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
+        
+        # Process external URL with automatic screenshot extraction for videos
+        result = await process_external_url_result(client, task_id, result)
+        
+        logger.info(f"Processed {task_type} task via Wavespeed API")
+        return result
+        
+    elif task_type == "animate_character":
+        # Wavespeed AI WAN 2.2 Character Animation
+        endpoint_path = "wavespeed-ai/wan-2.2/animate"
+        logger.info(f"Processing {task_type} task via Wavespeed API endpoint: {endpoint_path}")
+        
+        # Extract orchestrator details or use top-level params
+        orchestrator_details = params.get("orchestrator_details", {})
+        effective_params = {**params, **orchestrator_details}
+        
+        # Map parameters to Wavespeed API format for character animation
+        wavespeed_params = {
+            "image": effective_params.get("character_image_url", ""),
+            "mode": effective_params.get("mode", "animate"),
+            "prompt": effective_params.get("prompt", ""),
+            "resolution": effective_params.get("resolution", "480p"),
+            "seed": effective_params.get("seed", -1),
+            "video": effective_params.get("motion_video_url", "")
+        }
+        
+        logger.info(f"Character animation params: image={wavespeed_params['image'][:50]}..., "
+                   f"video={wavespeed_params['video'][:50]}..., "
+                   f"mode={wavespeed_params['mode']}, "
+                   f"resolution={wavespeed_params['resolution']}, "
+                   f"seed={wavespeed_params['seed']}")
         
         result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
         
@@ -446,7 +524,7 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         
     else:
         # Unsupported task type
-        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v'.")
+        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v', 'animate_character'.")
 
 
 async def worker_loop(index: int, worker_id: str, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> None:

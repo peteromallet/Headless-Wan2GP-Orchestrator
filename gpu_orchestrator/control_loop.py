@@ -997,6 +997,10 @@ class OrchestratorControlLoop:
                     metadata['ssh_details'] = result['ssh_details']
                 if 'pod_details' in result:
                     metadata['pod_details'] = result['pod_details']
+                if 'ram_tier' in result:
+                    metadata['ram_tier'] = result['ram_tier']  # Track which RAM tier was allocated
+                if 'storage_volume' in result:
+                    metadata['storage_volume'] = result['storage_volume']  # Track which storage volume was used
                 
                 # CRITICAL: Check if database update succeeds
                 update_success = await self.db.update_worker_status(worker_id, final_status, metadata)

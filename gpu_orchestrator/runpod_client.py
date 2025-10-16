@@ -99,7 +99,8 @@ def find_gpu_type(gpu_display_name: str, api_key: str):
 def create_pod_and_wait(api_key: str, gpu_type_id: str, image_name: str, name: str = "worker-pod", 
                        network_volume_id: str | None = None, volume_mount_path: str = "/workspace", 
                        disk_in_gb: int = 20, container_disk_in_gb: int = 10, wait_timeout: int = 600, 
-                       public_key_string: str | None = None, env_vars: Dict[str, str] = None):
+                       public_key_string: str | None = None, env_vars: Dict[str, str] = None,
+                       min_vcpu_count: int = 8, min_memory_in_gb: int = 32):
     """Create a RunPod pod and wait until it is running."""
     runpod.api_key = api_key
 
@@ -111,6 +112,8 @@ def create_pod_and_wait(api_key: str, gpu_type_id: str, image_name: str, name: s
         "cloud_type": "SECURE",
         "volume_in_gb": disk_in_gb,
         "container_disk_in_gb": container_disk_in_gb,
+        "min_vcpu_count": min_vcpu_count,
+        "min_memory_in_gb": min_memory_in_gb,
         "ports": "22/tcp",
     }
 
@@ -336,6 +339,18 @@ class RunpodClient:
         self.volume_mount_path = os.getenv("RUNPOD_VOLUME_MOUNT_PATH", "/workspace")
         self.disk_size_gb = int(os.getenv("RUNPOD_DISK_SIZE_GB", "50"))
         self.container_disk_gb = int(os.getenv("RUNPOD_CONTAINER_DISK_GB", "50"))
+        self.min_vcpu_count = int(os.getenv("RUNPOD_MIN_VCPU_COUNT", "8"))
+        self.min_memory_gb = int(os.getenv("RUNPOD_MIN_MEMORY_GB", "32"))
+        
+        # Storage volume fallback: Try multiple storage volumes (may have different instance availability)
+        # Hardcoded list of storage volumes to try in order
+        self.storage_volumes = ["Peter", "EU-NO-1", "EU-CZ-1", "EUR-IS-1"]  # Add your storage volume names here
+        
+        # RAM tier fallback strategy: Try to get highest RAM instances, fall back if unavailable
+        # Based on testing: 72GB is max available, then 60GB, 48GB, 32GB are common tiers
+        self.ram_tiers_enabled = os.getenv("RUNPOD_RAM_TIER_FALLBACK", "true").lower() == "true"
+        self.high_ram_tiers = [72, 60]  # Try high RAM (60+ GB) first across all storages
+        self.low_ram_tiers = [48, 32, 16]  # Fallback to lower RAM if high RAM unavailable
         
         # SSH configuration for worker access (both keys like user's example)
         self.ssh_public_key_path = os.getenv("RUNPOD_SSH_PUBLIC_KEY_PATH")
@@ -347,28 +362,119 @@ class RunpodClient:
         # Cache GPU type info
         self._gpu_type_info = None
     
-    def _get_storage_volume_id(self) -> Optional[str]:
-        """Get storage volume ID by name, cached."""
-        if self._storage_volume_id is not None:
-            return self._storage_volume_id
+    def _expand_network_volume(self, volume_id: str, new_size_gb: int) -> bool:
+        """
+        Expand a network volume to a new size using RunPod REST API.
         
-        if not self.storage_name:
+        Args:
+            volume_id: Network volume ID
+            new_size_gb: New size in GB (must be larger than current)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        import requests
+        
+        try:
+            url = f"https://rest.runpod.io/v1/networkvolumes/{volume_id}"
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
+            }
+            data = {
+                'size': new_size_gb
+            }
+            
+            logger.info(f"📦 Expanding network volume {volume_id} to {new_size_gb} GB...")
+            response = requests.patch(url, json=data, headers=headers)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Successfully expanded volume to {new_size_gb} GB")
+                return True
+            else:
+                logger.error(f"❌ Failed to expand volume: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error expanding volume: {e}")
+            return False
+    
+    def _check_and_expand_storage(self, storage_name: str, volume_id: str, min_free_gb: int = 50) -> bool:
+        """
+        Check storage space and expand if needed.
+        
+        Args:
+            storage_name: Name of the storage volume
+            volume_id: Network volume ID
+            min_free_gb: Minimum free space required in GB
+        
+        Returns:
+            True if storage is adequate or was successfully expanded
+        """
+        try:
+            # Get volume info
+            volumes = get_network_volumes(self.api_key)
+            volume_info = next((v for v in volumes if v.get('id') == volume_id), None)
+            
+            if not volume_info:
+                logger.warning(f"⚠️  Could not find volume info for {volume_id}")
+                return True  # Continue anyway
+            
+            current_size_gb = volume_info.get('size', 0)
+            logger.info(f"📊 Storage '{storage_name}': {current_size_gb} GB total")
+            
+            # Try to check actual free space via a test pod's df command
+            # For now, we'll use a heuristic: if total size < 100GB, expand it
+            if current_size_gb < 100:
+                new_size = current_size_gb + min_free_gb
+                logger.warning(f"⚠️  Storage '{storage_name}' is only {current_size_gb} GB")
+                logger.info(f"🔧 Expanding to {new_size} GB to ensure adequate space...")
+                
+                if self._expand_network_volume(volume_id, new_size):
+                    logger.info(f"✅ Storage expansion successful")
+                    return True
+                else:
+                    logger.warning(f"⚠️  Storage expansion failed, continuing anyway...")
+                    return True  # Don't block worker spawn on expansion failure
+            else:
+                logger.info(f"✅ Storage '{storage_name}' has adequate capacity ({current_size_gb} GB)")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"⚠️  Error checking storage space: {e}, continuing anyway...")
+            return True  # Don't block worker spawn on storage check failure
+    
+    def _get_storage_volume_id(self, storage_name: Optional[str] = None) -> Optional[str]:
+        """Get storage volume ID by name, optionally cached."""
+        # If no storage name provided, use the configured default
+        if storage_name is None:
+            storage_name = self.storage_name
+            # Return cached value for default storage
+            if self._storage_volume_id is not None:
+                return self._storage_volume_id
+        
+        if not storage_name:
             logger.info("No storage name configured")
             return None
         
-        logger.info(f"Looking up storage volume: {self.storage_name}")
+        logger.info(f"Looking up storage volume: {storage_name}")
         volumes = get_network_volumes(self.api_key)
         
         for vol in volumes:
-            if vol.get('name') == self.storage_name:
-                self._storage_volume_id = vol.get('id')
+            if vol.get('name') == storage_name:
+                volume_id = vol.get('id')
                 dc_info = vol.get('dataCenter', {})
-                logger.info(f"Found storage '{self.storage_name}' (ID: {self._storage_volume_id})")
+                logger.info(f"Found storage '{storage_name}' (ID: {volume_id})")
                 logger.info(f"  Size: {vol.get('size')}GB")
                 logger.info(f"  Location: {dc_info.get('name')} ({dc_info.get('location')})")
-                return self._storage_volume_id
+                
+                # Cache only if this is the default storage
+                if storage_name == self.storage_name:
+                    self._storage_volume_id = volume_id
+                
+                return volume_id
         
-        logger.warning(f"Storage '{self.storage_name}' not found. Available volumes:")
+        logger.warning(f"Storage '{storage_name}' not found. Available volumes:")
         for vol in volumes:
             dc_info = vol.get('dataCenter', {})
             logger.warning(f"  • {vol.get('name')} (ID: {vol.get('id')}) - {vol.get('size')}GB")
@@ -418,7 +524,13 @@ class RunpodClient:
     
     def spawn_worker(self, worker_id: str, worker_env: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         """
-        Spawn a new GPU worker on Runpod using the exact patterns from user's example.
+        Spawn a new GPU worker on Runpod using storage + RAM tiered fallback strategy.
+        
+        Strategy:
+        1. Try all storage volumes with HIGH RAM (60+ GB) first
+        2. If all fail, try all storage volumes with LOWER RAM tiers
+        
+        This maximizes chance of getting high-RAM instances across different datacenter locations.
         """
         gpu_info = self._get_gpu_type_info()
         if not gpu_info:
@@ -445,53 +557,141 @@ class RunpodClient:
         else:
             logger.error(f"[SSH_DEBUG] No SSH public key available for worker {worker_id} - authentication will fail!")
         
-        try:
-            logger.info(f"Creating worker pod: {worker_id}")
+        # Determine RAM tier strategy
+        if self.ram_tiers_enabled:
+            # Filter high/low RAM tiers based on configured minimum
+            high_ram_tiers = [tier for tier in self.high_ram_tiers if tier >= self.min_memory_gb]
+            low_ram_tiers = [tier for tier in self.low_ram_tiers if tier >= self.min_memory_gb]
             
-            # Get storage volume ID by name lookup (like user's example)
-            storage_volume_id = self._get_storage_volume_id()
+            # If min is very high, might have no low tiers
+            if not low_ram_tiers and not high_ram_tiers:
+                low_ram_tiers = [self.min_memory_gb]
             
-            # Use the exact create_pod_and_wait pattern from user's example
-            pod_details = create_pod_and_wait(
-                api_key=self.api_key,
-                gpu_type_id=gpu_info["id"],
-                image_name=self.worker_image,
-                name=worker_id,
-                network_volume_id=storage_volume_id,
-                volume_mount_path=self.volume_mount_path,  # Always provide mount path
-                disk_in_gb=self.disk_size_gb,
-                container_disk_in_gb=self.container_disk_gb,
-                public_key_string=public_key_content,
-                env_vars=env_vars,
-            )
+            logger.info(f"🎯 Storage + RAM tier fallback enabled")
+            logger.info(f"   Phase 1 (High RAM): Try {high_ram_tiers} GB across storages: {self.storage_volumes}")
+            logger.info(f"   Phase 2 (Low RAM): Try {low_ram_tiers} GB across storages if Phase 1 fails")
+        else:
+            # Simple mode: just try configured minimum
+            high_ram_tiers = [self.min_memory_gb]
+            low_ram_tiers = []
+        
+        # Phase 1: Try HIGH RAM across all storage volumes
+        last_error = None
+        for storage_name in self.storage_volumes:
+            storage_volume_id = self._get_storage_volume_id(storage_name)
+            if not storage_volume_id:
+                logger.warning(f"⚠️  Storage '{storage_name}' not found, skipping...")
+                continue
             
-            if not pod_details or 'id' not in pod_details:
-                logger.error(f"Failed to create pod for worker {worker_id}")
-                return None
+            # Check and expand storage if needed (adds +50GB if total < 100GB)
+            self._check_and_expand_storage(storage_name, storage_volume_id, min_free_gb=50)
             
-            pod_id = pod_details['id']
-            logger.info(f"Worker pod created successfully: {worker_id} -> {pod_id}")
+            for ram_tier in high_ram_tiers:
+                try:
+                    logger.info(f"🚀 Creating worker: {worker_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
+                    
+                    pod_details = create_pod_and_wait(
+                        api_key=self.api_key,
+                        gpu_type_id=gpu_info["id"],
+                        image_name=self.worker_image,
+                        name=worker_id,
+                        network_volume_id=storage_volume_id,
+                        volume_mount_path=self.volume_mount_path,
+                        disk_in_gb=self.disk_size_gb,
+                        container_disk_in_gb=self.container_disk_gb,
+                        min_vcpu_count=self.min_vcpu_count,
+                        min_memory_in_gb=ram_tier,
+                        public_key_string=public_key_content,
+                        env_vars=env_vars,
+                    )
+                    
+                    if pod_details and 'id' in pod_details:
+                        pod_id = pod_details['id']
+                        logger.info(f"✅ SUCCESS: {worker_id} -> {pod_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
+                        
+                        return {
+                            "worker_id": worker_id,
+                            "runpod_id": pod_id,
+                            "gpu_type": gpu_info["displayName"],
+                            "status": "spawning",
+                            "created_at": time.time(),
+                            "pod_details": pod_details,
+                            "ram_tier": ram_tier,
+                            "storage_volume": storage_name,
+                        }
+                    else:
+                        logger.warning(f"⚠️  Storage: {storage_name}, RAM: {ram_tier} GB - No ID returned")
+                        last_error = "Pod creation returned no ID"
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    if "no longer any instances available" in error_msg.lower():
+                        logger.warning(f"⚠️  Storage: {storage_name}, RAM: {ram_tier} GB - No instances available")
+                        last_error = f"No instances available"
+                    else:
+                        logger.warning(f"⚠️  Storage: {storage_name}, RAM: {ram_tier} GB - {error_msg}")
+                        last_error = error_msg
+                    continue
+        
+        # Phase 2: If high RAM failed everywhere, try LOW RAM across all storage volumes
+        if low_ram_tiers:
+            logger.warning(f"⚠️  Phase 1 failed (high RAM not available). Trying Phase 2 (lower RAM tiers)...")
             
-            # Return pod details immediately for tracking
-            result = {
-                "worker_id": worker_id,
-                "runpod_id": pod_id,
-                "gpu_type": gpu_info["displayName"],
-                "status": "spawning",  # Worker is spawning, orchestrator will monitor it
-                "created_at": time.time(),
-                "pod_details": pod_details,
-            }
-            
-            logger.info(f"Worker {worker_id} pod created, will be initialized once it's running")
-            
-            # Don't wait for SSH or initialization here - let the orchestrator handle that
-            # This prevents timeouts and ensures we track all created pods
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error creating pod for worker {worker_id}: {e}")
-            return None
+            for storage_name in self.storage_volumes:
+                storage_volume_id = self._get_storage_volume_id(storage_name)
+                if not storage_volume_id:
+                    continue
+                
+                for ram_tier in low_ram_tiers:
+                    try:
+                        logger.info(f"🚀 Creating worker: {worker_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
+                        
+                        pod_details = create_pod_and_wait(
+                            api_key=self.api_key,
+                            gpu_type_id=gpu_info["id"],
+                            image_name=self.worker_image,
+                            name=worker_id,
+                            network_volume_id=storage_volume_id,
+                            volume_mount_path=self.volume_mount_path,
+                            disk_in_gb=self.disk_size_gb,
+                            container_disk_in_gb=self.container_disk_gb,
+                            min_vcpu_count=self.min_vcpu_count,
+                            min_memory_in_gb=ram_tier,
+                            public_key_string=public_key_content,
+                            env_vars=env_vars,
+                        )
+                        
+                        if pod_details and 'id' in pod_details:
+                            pod_id = pod_details['id']
+                            logger.info(f"✅ SUCCESS: {worker_id} -> {pod_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
+                            
+                            return {
+                                "worker_id": worker_id,
+                                "runpod_id": pod_id,
+                                "gpu_type": gpu_info["displayName"],
+                                "status": "spawning",
+                                "created_at": time.time(),
+                                "pod_details": pod_details,
+                                "ram_tier": ram_tier,
+                                "storage_volume": storage_name,
+                            }
+                        else:
+                            last_error = "Pod creation returned no ID"
+                            
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "no longer any instances available" in error_msg.lower():
+                            last_error = f"No instances available"
+                        else:
+                            last_error = error_msg
+                        continue
+        
+        # All attempts failed
+        logger.error(f"❌ Failed to create pod for worker {worker_id}")
+        logger.error(f"   Tried storages: {self.storage_volumes}")
+        logger.error(f"   Tried RAM tiers: {high_ram_tiers + low_ram_tiers}")
+        logger.error(f"   Last error: {last_error}")
+        return None
     
 
     
@@ -523,6 +723,37 @@ export SUPABASE_ANON_KEY="{supabase_anon_key}"
 export SUPABASE_SERVICE_ROLE_KEY="{supabase_service_key}"
 export SUPABASE_SERVICE_KEY="{supabase_service_key}"
 export REPLICATE_API_TOKEN="{os.getenv('REPLICATE_API_TOKEN', '')}"
+
+# Check if Headless-Wan2GP exists, install if not
+if [ ! -d "/workspace/Headless-Wan2GP" ]; then
+    echo "📦 Headless-Wan2GP not found, installing..."
+    cd /workspace || exit 1
+    
+    echo "Step 1: Cloning repository..."
+    git clone https://github.com/peteromallet/Headless-Wan2GP || exit 1
+    
+    cd Headless-Wan2GP || exit 1
+    
+    echo "Step 2: Installing system dependencies..."
+    apt-get update && apt-get install -y python3.10-venv ffmpeg || exit 1
+    
+    echo "Step 3: Creating virtual environment..."
+    python3.10 -m venv venv || exit 1
+    
+    echo "Step 4: Activating venv and installing PyTorch..."
+    source venv/bin/activate || exit 1
+    pip install --no-cache-dir torch==2.6.0 torchvision torchaudio -f https://download.pytorch.org/whl/cu124 || exit 1
+    
+    echo "Step 5: Installing Wan2GP requirements..."
+    pip install --no-cache-dir -r Wan2GP/requirements.txt || exit 1
+    
+    echo "Step 6: Installing worker requirements..."
+    pip install --no-cache-dir -r requirements.txt || exit 1
+    
+    echo "✅ Headless-Wan2GP installation complete"
+else
+    echo "✅ Headless-Wan2GP already exists at /workspace/Headless-Wan2GP"
+fi
 
 # Create logs directory FIRST (critical for debugging)
 mkdir -p /workspace/Headless-Wan2GP/logs
