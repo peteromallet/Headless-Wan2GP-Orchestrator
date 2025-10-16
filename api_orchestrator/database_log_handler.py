@@ -5,6 +5,9 @@ Database Log Handler for Orchestrator
 Custom logging handler that batches logs and sends them to Supabase in the background.
 This allows centralized log storage without blocking the main orchestrator loop.
 
+Uses contextvars for proper async context isolation - each concurrent task maintains
+its own task_id, worker_id, and cycle_number without interference.
+
 Usage:
     from database_log_handler import DatabaseLogHandler
     from database import DatabaseClient
@@ -17,7 +20,7 @@ Usage:
     )
     logging.getLogger().addHandler(handler)
     
-    # Set current cycle for context
+    # Set current cycle for context (thread-safe, async-safe)
     handler.set_current_cycle(5)
 """
 
@@ -25,9 +28,16 @@ import logging
 import queue
 import threading
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from supabase import Client
+
+# Context variables for async-safe context tracking
+# These maintain separate values per async task/thread
+_context_cycle: ContextVar[Optional[int]] = ContextVar('cycle_number', default=None)
+_context_task_id: ContextVar[Optional[str]] = ContextVar('task_id', default=None)
+_context_worker_id: ContextVar[Optional[str]] = ContextVar('worker_id', default=None)
 
 
 class DatabaseLogHandler(logging.Handler):
@@ -93,11 +103,6 @@ class DatabaseLogHandler(logging.Handler):
         )
         self.worker_thread.start()
         
-        # Context tracking
-        self.current_cycle = 0
-        self.current_task_id = None
-        self.current_worker_id = None
-        
         # Statistics
         self.total_logs_queued = 0
         self.total_logs_sent = 0
@@ -105,17 +110,27 @@ class DatabaseLogHandler(logging.Handler):
         self.total_batches_sent = 0
         self.total_errors = 0
     
-    def set_current_cycle(self, cycle_number: int):
-        """Set current orchestrator cycle number for context."""
-        self.current_cycle = cycle_number
+    def set_current_cycle(self, cycle_number: Optional[int]):
+        """
+        Set current orchestrator cycle number for context.
+        Uses contextvars for async-safe context isolation.
+        """
+        _context_cycle.set(cycle_number)
     
     def set_current_task(self, task_id: Optional[str]):
-        """Set current task ID for context."""
-        self.current_task_id = task_id
+        """
+        Set current task ID for context.
+        Uses contextvars for async-safe context isolation - each concurrent task
+        maintains its own task_id without interference.
+        """
+        _context_task_id.set(task_id)
     
     def set_current_worker(self, worker_id: Optional[str]):
-        """Set current worker ID for context."""
-        self.current_worker_id = worker_id
+        """
+        Set current worker ID for context.
+        Uses contextvars for async-safe context isolation.
+        """
+        _context_worker_id.set(worker_id)
     
     def emit(self, record: logging.LogRecord):
         """
@@ -142,15 +157,18 @@ class DatabaseLogHandler(logging.Handler):
                 }
             }
             
-            # Add context if available
-            if self.current_cycle > 0:
-                entry['cycle_number'] = self.current_cycle
+            # Add context if available (from contextvars - async-safe)
+            cycle_number = _context_cycle.get()
+            if cycle_number is not None and cycle_number > 0:
+                entry['cycle_number'] = cycle_number
             
-            if self.current_task_id:
-                entry['task_id'] = self.current_task_id
+            task_id = _context_task_id.get()
+            if task_id:
+                entry['task_id'] = task_id
             
-            if self.current_worker_id:
-                entry['worker_id'] = self.current_worker_id
+            worker_id = _context_worker_id.get()
+            if worker_id:
+                entry['worker_id'] = worker_id
             
             # Add exception info if present
             if record.exc_info:
