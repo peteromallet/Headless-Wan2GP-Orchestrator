@@ -79,7 +79,7 @@ def setup_logging(db_client=None, source_type: str = "orchestrator_gpu"):
     enable_db_logging = os.getenv("ENABLE_DB_LOGGING", "false").lower() == "true"
     if enable_db_logging and db_client:
         try:
-            from database_log_handler import DatabaseLogHandler
+            from .database_log_handler import DatabaseLogHandler
             
             # Generate source ID (use instance ID if set, otherwise hostname)
             source_id = os.getenv(
