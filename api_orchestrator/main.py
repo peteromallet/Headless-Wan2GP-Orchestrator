@@ -10,15 +10,21 @@ from typing import Any, Dict, Optional
 import httpx
 from dotenv import load_dotenv
 
+# Load environment variables from .env at import time so module-level reads work
+load_dotenv()
+
+# Configure structured logging before importing internal modules
+from .logging_config import setup_logging, set_current_cycle, get_db_logging_stats
+from .database import DatabaseClient
+
+# Initial setup without database client
+setup_logging()
+
 # Import utility modules
 from .storage_utils import process_external_url_result, upload_to_supabase_storage
 from .task_utils import count_tasks, claim_next_task, mark_complete, mark_failed
 from .wavespeed_utils import call_wavespeed_api
 from .video_utils import download_video_to_temp, remove_last_frame_from_video, join_videos, extract_first_frame_bytes
-
-
-# Load environment variables from .env at import time so module-level reads work
-load_dotenv()
 
 CONCURRENCY = int(os.getenv("API_WORKER_CONCURRENCY", "20"))
 RUN_TYPE = "api"  # Hardcoded for API workers - they process API tasks
@@ -588,15 +594,25 @@ def validate_api_environment():
     return True
 
 async def main_async() -> None:
-    # Minimal logging setup
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-    
     logger.info(f"[STARTUP] API Orchestrator starting...")
     
     # Validate environment before proceeding
     if not validate_api_environment():
         logger.error("[STARTUP] 🛑 Exiting due to missing required configuration!")
         sys.exit(1)
+    
+    # Initialize database client for centralized logging
+    try:
+        db_client = DatabaseClient()
+        
+        # Re-initialize logging with database client if DB logging is enabled
+        from .logging_config import setup_logging as reinit_logging
+        reinit_logging(db_client=db_client, source_type="orchestrator_api")
+        
+        logger.info("[STARTUP] ✅ Centralized database logging initialized")
+    except Exception as e:
+        logger.warning(f"[STARTUP] ⚠️  Could not initialize database logging: {e}")
+        logger.warning("[STARTUP] Continuing with console logging only...")
     
     # Log additional startup configuration
     logger.info(f"[STARTUP] CONCURRENCY: {CONCURRENCY}")
@@ -649,6 +665,12 @@ async def main_async() -> None:
             # Log every 10 loops or when there's activity
             if loop_count % 10 == 1 or capacity > 0 or len(active_tasks) > 0:
                 logger.info(f"[WORKER_LOOP] Loop #{loop_count}: Active tasks: {len(active_tasks)}, Capacity: {capacity}")
+            
+            # Log database logging stats periodically (every 100 loops)
+            if loop_count % 100 == 0:
+                db_stats = get_db_logging_stats()
+                if db_stats:
+                    logger.info(f"[WORKER_LOOP] 📊 Database logging stats: {db_stats}")
             
             if capacity > 0:
                 logger.debug(f"[WORKER_LOOP] Checking for available tasks...")

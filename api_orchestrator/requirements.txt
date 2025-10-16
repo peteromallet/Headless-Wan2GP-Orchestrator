@@ -6,4 +6,5 @@ structlog>=23.0.0
 python-json-logger>=2.0.0
 opencv-python-headless>=4.9.0.80
 numpy>=1.26.0
+supabase>=2.0.0
 
