@@ -942,7 +942,9 @@ echo "=========================================" >> $LOG_FILE 2>&1
         logger.info(f"Startup script created successfully, verifying and executing...")
         
         # Verify the script was created and make it executable
+        # First ensure logs directory exists (may not exist if Headless-Wan2GP was just cloned)
         verify_and_execute_command = f"""
+        mkdir -p /workspace/Headless-Wan2GP/logs
         echo "=== SCRIPT EXECUTION DEBUG ===" > /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
         echo "Script path: {script_path}" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
         echo "Script exists: $(ls -la {script_path})" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
