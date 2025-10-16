@@ -79,7 +79,12 @@ def setup_logging(db_client=None, source_type: str = "orchestrator_gpu"):
     enable_db_logging = os.getenv("ENABLE_DB_LOGGING", "false").lower() == "true"
     if enable_db_logging and db_client:
         try:
-            from .database_log_handler import DatabaseLogHandler
+            # Try relative import first (when run as package)
+            try:
+                from .database_log_handler import DatabaseLogHandler
+            except ImportError:
+                # Fall back to absolute import (when run as script)
+                from database_log_handler import DatabaseLogHandler
             
             # Generate source ID (use instance ID if set, otherwise hostname)
             source_id = os.getenv(
