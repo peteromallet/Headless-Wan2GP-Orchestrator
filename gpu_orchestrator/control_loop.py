@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from database import DatabaseClient
 from runpod_client import create_runpod_client, spawn_runpod_gpu, terminate_runpod_gpu
+from health_monitor import OrchestratorHealthMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ class OrchestratorControlLoop:
         # Track recent scale actions to apply grace periods
         self.last_scale_down_at = None
         self.last_scale_up_at = None
+        
+        # Health monitor
+        self.health_monitor = OrchestratorHealthMonitor()
         
         logger.info(f"OrchestratorControlLoop initialized with scaling: {self.min_active_gpus}-{self.max_active_gpus} GPUs, idle buffer: {self.machines_to_keep_idle}")
         
@@ -149,6 +153,19 @@ class OrchestratorControlLoop:
                 total_tasks = totals.get('queued_plus_active', 0)
                 queued_count = totals.get('queued_only', 0)
                 active_cloud_count = totals.get('active_only', 0)
+                
+                # CRITICAL: Log task counts with MAXIMUM visibility
+                # These logs go to: stdout, file, AND database (if working)
+                logger.critical(f"🔢 TASK COUNT (Cycle #{self.cycle_count}): Queued={queued_count}, Active={active_cloud_count}, Total={total_tasks}")
+                
+                # Also log to stdout directly (bypass logging system for redundancy)
+                import sys
+                print(f"\n{'='*80}", file=sys.stderr)
+                print(f"ORCHESTRATOR CYCLE #{self.cycle_count} - TASK COUNT", file=sys.stderr)
+                print(f"  Queued only: {queued_count}", file=sys.stderr)
+                print(f"  Active (cloud): {active_cloud_count}", file=sys.stderr)
+                print(f"  Total workload: {total_tasks}", file=sys.stderr)
+                print(f"{'='*80}\n", file=sys.stderr)
                 
                 # Log detailed breakdown for debugging
                 logger.info(f"📊 DETAILED TASK BREAKDOWN:")
@@ -536,6 +553,10 @@ class OrchestratorControlLoop:
             failure_rate_ok = await self._check_worker_failure_rate()
             
             # Enhanced logging for scaling decision analysis
+            # CRITICAL: Make scaling decisions ABUNDANTLY CLEAR
+            import sys
+            
+            logger.critical(f"🎯 SCALING DECISION (Cycle #{self.cycle_count}): Current={len(active_workers)}+{len(spawning_workers)}, Desired={desired_workers}")
             logger.info(f"🎯 SCALING DECISION ANALYSIS:")
             logger.info(f"   • Task-based scaling (queued + active): {task_based_workers} workers")
             logger.info(f"     - Queued tasks: {queued_count}")
@@ -546,6 +567,23 @@ class OrchestratorControlLoop:
             logger.info(f"   → FINAL DESIRED: {desired_workers} workers")
             logger.info(f"   • Current capacity: {len(idle_workers)} idle + {busy_workers_count} busy = {len(active_workers)} active, {len(spawning_workers)} spawning")
             logger.info(f"   • Failure rate check: {'✅ PASS' if failure_rate_ok else '❌ FAIL (blocking scale-up)'}")
+            
+            # Also log to stderr for absolute visibility
+            print(f"\n{'='*80}", file=sys.stderr)
+            print(f"SCALING DECISION (Cycle #{self.cycle_count})", file=sys.stderr)
+            print(f"  Task Count: {queued_count} queued + {active_cloud_count} active = {total_workload} total", file=sys.stderr)
+            print(f"  Current: {len(active_workers)} active + {len(spawning_workers)} spawning = {len(active_workers) + len(spawning_workers)} total", file=sys.stderr)
+            print(f"  Desired: {desired_workers} workers", file=sys.stderr)
+            print(f"  Decision: ", end='', file=sys.stderr)
+            
+            current_total = len(active_workers) + len(spawning_workers)
+            if current_total < desired_workers:
+                print(f"SCALE UP by {desired_workers - current_total}", file=sys.stderr)
+            elif current_total > desired_workers:
+                print(f"SCALE DOWN by {current_total - desired_workers}", file=sys.stderr)
+            else:
+                print(f"MAINTAIN (at capacity)", file=sys.stderr)
+            print(f"{'='*80}\n", file=sys.stderr)
 
             # Dynamic idle timeout: use short timeout when over-capacity
             if total_workers > desired_workers:
@@ -603,12 +641,24 @@ class OrchestratorControlLoop:
                 if not failure_rate_ok:
                     logger.error(f"⚠️  SCALING BLOCKED: High failure rate detected, not spawning {workers_needed} workers")
                     logger.error(f"⚠️  Fix the underlying issue (SSH auth, image problems, etc.) before scaling resumes")
+                    
+                    # Also log to stderr
+                    import sys
+                    print(f"\n⚠️  SCALING BLOCKED: High failure rate, refusing to spawn {workers_needed} workers\n", file=sys.stderr)
                 else:
+                    logger.critical(f"🚀 SCALING UP: Spawning {workers_needed} workers (current: {effective_capacity}, desired: {desired_workers})")
                     logger.info(f"Scaling up: need {workers_needed} more workers (current: {effective_capacity}, desired: {desired_workers})")
                     
-                    for _ in range(workers_needed):
+                    # Also log to stderr
+                    import sys
+                    print(f"\n🚀 SCALING UP: Creating {workers_needed} new workers\n", file=sys.stderr)
+                    
+                    for i in range(workers_needed):
                         if await self._spawn_worker():
                             summary["actions"]["workers_spawned"] += 1
+                            logger.critical(f"✅ Worker {i+1}/{workers_needed} spawned successfully")
+                        else:
+                            logger.error(f"❌ Failed to spawn worker {i+1}/{workers_needed}")
             
             # 7. Update summary with final status
             summary["status"] = {
@@ -628,6 +678,21 @@ class OrchestratorControlLoop:
             
             cycle_duration = (datetime.now(timezone.utc) - cycle_start).total_seconds()
             logger.info(f"Orchestrator cycle completed in {cycle_duration:.2f}s: {summary['actions']}")
+            
+            # Health monitoring
+            self.health_monitor.check_scaling_anomaly(
+                task_count=total_tasks,
+                worker_count=total_workers,
+                workers_spawned=summary["actions"]["workers_spawned"]
+            )
+            
+            # Periodic health summary
+            self.health_monitor.log_health_summary(self.cycle_count)
+            
+            # Check logging health every 10 cycles
+            if self.cycle_count % 10 == 0:
+                if not self.health_monitor.check_logging_health():
+                    logger.error("⚠️  Database logging is degraded - check logs above")
             
             return summary
             

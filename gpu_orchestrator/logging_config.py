@@ -115,8 +115,32 @@ def setup_logging(db_client=None, source_type: str = "orchestrator_gpu"):
             
         except Exception as e:
             logger = logging.getLogger(__name__)
-            logger.warning(f"⚠️  Failed to enable database logging: {e}")
+            logger.error(f"❌ CRITICAL: Database logging initialization FAILED: {e}")
+            logger.error(f"   Exception type: {type(e).__name__}")
+            logger.error(f"   This will cause LOSS OF OBSERVABILITY")
+            
+            # Save error to file for post-mortem
+            try:
+                import traceback
+                from datetime import datetime
+                error_file = "db_logging_errors.log"
+                with open(error_file, "a") as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"Database Logging Failure: {datetime.now().isoformat()}\n")
+                    f.write(f"Error: {e}\n")
+                    f.write(f"{'='*80}\n")
+                    f.write(traceback.format_exc())
+                    f.write(f"\n")
+                logger.error(f"   Error details saved to: {error_file}")
+            except Exception as save_error:
+                logger.error(f"   Could not save error to file: {save_error}")
+            
             _db_log_handler = None
+            
+            # Check if we should fail fast
+            if os.getenv("DB_LOGGING_REQUIRED", "false").lower() == "true":
+                logger.error("   DB_LOGGING_REQUIRED=true, orchestrator will exit")
+                raise RuntimeError(f"Database logging is required but failed to initialize: {e}")
     
     return _db_log_handler
 
