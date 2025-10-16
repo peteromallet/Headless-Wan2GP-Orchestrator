@@ -625,7 +625,13 @@ async def main_async() -> None:
 
     async def spawn_task(task_payload: Dict[str, Any], client: httpx.AsyncClient):
         task_id = task_payload.get("task_id") or task_payload.get("id")
+        
+        # Set task context for logging
+        from .logging_config import set_current_task
+        set_current_task(str(task_id))
+        
         try:
+            logger.info(f"Starting task {task_id}")
             result = await process_api_task(task_payload, client)
             
             # Check if task completion was already handled by the upload process
@@ -638,6 +644,8 @@ async def main_async() -> None:
                     # If we can't mark the task complete, treat it as a failure to prevent stuck tasks
                     logger.error(f"Task {task_id} processed successfully but failed to save to database")
                     await mark_failed(client, task_id, "Task processed successfully but failed to save completion status to database")
+                else:
+                    logger.info(f"Task {task_id} completed successfully")
         except Exception as exc:
             logger.error(f"Task {task_id} failed with exception: {exc}")
             logger.error(f"Exception type: {type(exc).__name__}")
@@ -646,6 +654,9 @@ async def main_async() -> None:
             failed_success = await mark_failed(client, task_id, str(exc))
             if not failed_success:
                 logger.error(f"DOUBLE FAILURE: Task {task_id} failed AND could not mark as failed in database!")
+        finally:
+            # Clear task context
+            set_current_task(None)
 
     async with httpx.AsyncClient(limits=limits, timeout=20.0) as client:
         logger.info(f"[WORKER_LOOP] Starting worker loop for {worker_id} with RUN_TYPE: {RUN_TYPE}, CONCURRENCY: {CONCURRENCY}, POLL_SEC: {PARENT_POLL_SEC}")
