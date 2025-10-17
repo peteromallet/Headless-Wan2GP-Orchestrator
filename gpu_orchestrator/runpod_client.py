@@ -765,22 +765,40 @@ else
         echo "Step 2: Creating virtual environment..."
         python3.10 -m venv venv || exit 1
         
-        echo "Step 3: Activating venv and installing PyTorch..."
+        echo "Step 3: Activating venv..."
         source venv/bin/activate || exit 1
+        
+        echo "Step 4: Installing PyTorch..."
         pip install --no-cache-dir torch==2.6.0 torchvision torchaudio -f https://download.pytorch.org/whl/cu124 || exit 1
         
-        echo "Step 4: Installing Wan2GP requirements..."
+        echo "Step 5: Installing Wan2GP requirements..."
         pip install --no-cache-dir -r Wan2GP/requirements.txt || exit 1
         
-        echo "Step 5: Installing worker requirements..."
+        echo "Step 6: Installing worker requirements..."
         pip install --no-cache-dir -r requirements.txt || exit 1
         
         echo "✅ Virtual environment rebuild complete"
     else
-        echo "✅ Virtual environment exists and looks valid"
-        echo "Activating existing virtual environment..."
+        echo "✅ Virtual environment exists, activating..."
         source venv/bin/activate || exit 1
-        echo "✅ Virtual environment activated"
+        
+        # Check if dependencies are installed by testing for a key package
+        if ! python -c "import torch, dotenv" 2>/dev/null; then
+            echo "⚠️  Dependencies missing in venv, installing..."
+            
+            echo "Installing PyTorch..."
+            pip install --no-cache-dir torch==2.6.0 torchvision torchaudio -f https://download.pytorch.org/whl/cu124 || exit 1
+            
+            echo "Installing Wan2GP requirements..."
+            pip install --no-cache-dir -r Wan2GP/requirements.txt || exit 1
+            
+            echo "Installing worker requirements..."
+            pip install --no-cache-dir -r requirements.txt || exit 1
+            
+            echo "✅ Dependencies installed"
+        else
+            echo "✅ Dependencies already installed"
+        fi
     fi
 fi
 
