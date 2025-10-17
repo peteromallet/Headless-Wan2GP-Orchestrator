@@ -33,9 +33,9 @@ class OrchestratorControlLoop:
         self.machines_to_keep_idle = int(os.getenv("MACHINES_TO_KEEP_IDLE", "0"))
         
         # Timeout settings (in seconds)
-        self.gpu_idle_timeout = int(os.getenv("GPU_IDLE_TIMEOUT_SEC", "300"))
+        self.gpu_idle_timeout = int(os.getenv("GPU_IDLE_TIMEOUT_SEC", "600"))  # 10 minutes to allow for PyTorch installation
         self.task_stuck_timeout = int(os.getenv("TASK_STUCK_TIMEOUT_SEC", "1200"))
-        self.spawning_timeout = int(os.getenv("SPAWNING_TIMEOUT_SEC", "300"))
+        self.spawning_timeout = int(os.getenv("SPAWNING_TIMEOUT_SEC", "600"))  # 10 minutes to allow for dependency installation
         self.graceful_shutdown_timeout = int(os.getenv("GRACEFUL_SHUTDOWN_TIMEOUT_SEC", "600"))
         # Shorter idle timeout used only when we are over desired capacity
         self.overcapacity_idle_timeout = int(os.getenv("GPU_OVERCAPACITY_IDLE_TIMEOUT_SEC", "30"))
