@@ -993,6 +993,22 @@ echo "=========================================" >> $LOG_FILE 2>&1
                 logger.info(f"Script stdout: {stdout.strip()}")
             if stderr and stderr.strip():
                 logger.warning(f"Script stderr: {stderr.strip()}")
+            
+            # Retrieve the detailed startup log from the pod for debugging
+            log_retrieval_command = f"""
+            if [ -f /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log ]; then
+                echo "=== STARTUP LOG CONTENTS ==="
+                tail -100 /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log
+            else
+                echo "WARNING: Startup log file not found at /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log"
+            fi
+            """
+            
+            log_result = self.execute_command_on_worker(runpod_id, log_retrieval_command, timeout=10)
+            if log_result and log_result[1]:
+                logger.info(f"📋 Worker {worker_id} startup log (last 100 lines):")
+                logger.info(f"\n{log_result[1]}")
+            
             return exit_code == 0
         else:
             logger.error(f"Failed to execute worker startup script")
