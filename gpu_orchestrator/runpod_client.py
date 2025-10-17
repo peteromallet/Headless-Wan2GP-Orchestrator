@@ -753,6 +753,35 @@ if [ ! -d "/workspace/Headless-Wan2GP" ]; then
     echo "✅ Headless-Wan2GP installation complete"
 else
     echo "✅ Headless-Wan2GP already exists at /workspace/Headless-Wan2GP"
+    cd /workspace/Headless-Wan2GP || exit 1
+    
+    # Check if venv exists, if not create it and install dependencies
+    if [ ! -d "venv" ] || [ ! -f "venv/bin/activate" ]; then
+        echo "⚠️  Virtual environment missing or incomplete, rebuilding..."
+        
+        echo "Step 1: Installing system dependencies..."
+        apt-get update && apt-get install -y python3.10-venv ffmpeg || exit 1
+        
+        echo "Step 2: Creating virtual environment..."
+        python3.10 -m venv venv || exit 1
+        
+        echo "Step 3: Activating venv and installing PyTorch..."
+        source venv/bin/activate || exit 1
+        pip install --no-cache-dir torch==2.6.0 torchvision torchaudio -f https://download.pytorch.org/whl/cu124 || exit 1
+        
+        echo "Step 4: Installing Wan2GP requirements..."
+        pip install --no-cache-dir -r Wan2GP/requirements.txt || exit 1
+        
+        echo "Step 5: Installing worker requirements..."
+        pip install --no-cache-dir -r requirements.txt || exit 1
+        
+        echo "✅ Virtual environment rebuild complete"
+    else
+        echo "✅ Virtual environment exists and looks valid"
+        echo "Activating existing virtual environment..."
+        source venv/bin/activate || exit 1
+        echo "✅ Virtual environment activated"
+    fi
 fi
 
 # Create logs directory FIRST (critical for debugging)
