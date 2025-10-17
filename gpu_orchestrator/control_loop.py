@@ -48,7 +48,7 @@ class OrchestratorControlLoop:
         
         # Failure rate protection (prevent endless spin-ups)
         self.max_failure_rate = float(os.getenv("MAX_WORKER_FAILURE_RATE", "0.8"))  # 80% failure rate threshold
-        self.failure_window_minutes = int(os.getenv("FAILURE_WINDOW_MINUTES", "30"))  # Look at last 30 minutes
+        self.failure_window_minutes = int(os.getenv("FAILURE_WINDOW_MINUTES", "5"))  # Look at last 5 minutes
         self.min_workers_for_rate_check = int(os.getenv("MIN_WORKERS_FOR_RATE_CHECK", "5"))  # Need at least 5 workers to calculate rate
         
         # Validate and clamp machines_to_keep_idle
