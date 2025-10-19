@@ -13,12 +13,12 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # Configure structured logging before importing internal modules that emit logs
-from logging_config import setup_logging, set_current_cycle, get_db_logging_stats
+from .logging_config import setup_logging, set_current_cycle, get_db_logging_stats
 
 # Initial setup without database client
 setup_logging()
 
-from control_loop import OrchestratorControlLoop
+from .control_loop import OrchestratorControlLoop
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ async def run_single_cycle():
         orchestrator = OrchestratorControlLoop()
         
         # Re-initialize logging with database client if DB logging is enabled
-        from logging_config import setup_logging as reinit_logging
+        from .logging_config import setup_logging as reinit_logging
         reinit_logging(db_client=orchestrator.db, source_type="orchestrator_gpu")
         
         # Run cycle
@@ -156,7 +156,7 @@ async def run_continuous_loop():
     orchestrator = OrchestratorControlLoop()
     
     # Re-initialize logging with database client if DB logging is enabled
-    from logging_config import setup_logging as reinit_logging
+    from .logging_config import setup_logging as reinit_logging
     reinit_logging(db_client=orchestrator.db, source_type="orchestrator_gpu")
     
     while True:

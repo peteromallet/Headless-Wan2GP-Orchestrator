@@ -11,9 +11,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
-from database import DatabaseClient
-from runpod_client import create_runpod_client, spawn_runpod_gpu, terminate_runpod_gpu
-from health_monitor import OrchestratorHealthMonitor
+from .database import DatabaseClient
+from .runpod_client import create_runpod_client, spawn_runpod_gpu, terminate_runpod_gpu
+from .health_monitor import OrchestratorHealthMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +314,7 @@ class OrchestratorControlLoop:
             for worker in spawning_workers:
                 metadata = worker.get('metadata', {})
                 runpod_id = metadata.get('runpod_id')
+                worker_id = worker['id']
                 
                 if not runpod_id:
                     # No runpod ID means spawn failed
@@ -322,26 +323,27 @@ class OrchestratorControlLoop:
                     continue
                 
                 # Check if pod is ready and initialize it
-                status_update = self.runpod.check_and_initialize_worker(worker['id'], runpod_id)
+                status_update = self.runpod.check_and_initialize_worker(worker_id, runpod_id)
                 
-                if status_update['status'] == 'active':
-                    # Worker is ready and initialized
-                    # Remove status from update to avoid conflicts with orchestrator_status
-                    metadata_update = {k: v for k, v in status_update.items() if k != 'status'}
-                    # Add promotion timestamp for grace period tracking
-                    metadata_update['promoted_to_active_at'] = datetime.now(timezone.utc).isoformat()
-                    await self.db.update_worker_status(worker['id'], 'active', metadata_update)
-                    summary["actions"]["workers_promoted"] += 1
-                    logger.debug(f"Promoted worker {worker['id']} to active")
-                    
-                    # Start worker process if configured
-                    auto_start = os.getenv("AUTO_START_WORKER_PROCESS", "true").lower() == "true"
-                    if auto_start:
-                        if self.runpod.start_worker_process(runpod_id, worker['id']):
-                            logger.debug(f"Worker process started for {worker['id']}")
-                        else:
-                            logger.warning(f"Failed to start worker process for {worker['id']}")
-                            
+                if status_update.get('ready') and status_update['status'] == 'spawning':
+                    # Pod is ready and SSH is available - launch startup script if not already done
+                    # Check if we've already launched the script by looking for metadata
+                    if not metadata.get('startup_script_launched'):
+                        auto_start = os.getenv("AUTO_START_WORKER_PROCESS", "true").lower() == "true"
+                        if auto_start:
+                            if self.runpod.start_worker_process(runpod_id, worker_id):
+                                logger.info(f"🚀 Launched startup script for {worker_id}")
+                                # Mark that we've launched the script
+                                metadata_update = {
+                                    'ssh_details': status_update.get('ssh_details'),
+                                    'startup_script_launched': True,
+                                    'startup_script_launched_at': datetime.now(timezone.utc).isoformat()
+                                }
+                                await self.db.update_worker_status(worker_id, 'spawning', metadata_update)
+                                summary["actions"]["startup_scripts_launched"] = summary["actions"].get("startup_scripts_launched", 0) + 1
+                            else:
+                                logger.warning(f"Failed to launch startup script for {worker_id}")
+                    # Worker stays in "spawning" status until it starts logging
                     
                 elif status_update['status'] == 'error':
                     # Pod failed or initialization failed
@@ -352,6 +354,22 @@ class OrchestratorControlLoop:
                     # Timeout waiting for pod to be ready
                     await self._mark_worker_error(worker, 'Spawning timeout')
                     summary["actions"]["workers_failed"] += 1
+                else:
+                    # Still spawning - check if worker has started logging (means initialization completed)
+                    startup_status = self.runpod.check_worker_startup_status(worker_id, runpod_id)
+                    
+                    if startup_status['status'] == 'active':
+                        # Worker started logging! Promote it to active even if pod status check didn't catch it yet
+                        logger.info(f"🚀 Worker {worker_id} detected as active via logging - promoting now")
+                        metadata_update = {'promoted_to_active_at': datetime.now(timezone.utc).isoformat()}
+                        await self.db.update_worker_status(worker_id, 'active', metadata_update)
+                        summary["actions"]["workers_promoted"] += 1
+                        if startup_status.get('logs'):
+                            summary["actions"]["startup_logs_retrieved"] = summary["actions"].get("startup_logs_retrieved", 0) + 1
+                    elif startup_status['status'] == 'initializing':
+                        logger.debug(f"Worker {worker_id}: {startup_status['message']}")
+                        if startup_status.get('logs') and 'error' in startup_status.get('logs', '').lower():
+                            logger.warning(f"⚠️ Worker {worker_id} may have initialization errors")
                 # else: still spawning, will check again next cycle
             
             # 2. HEALTH CHECKS on active workers

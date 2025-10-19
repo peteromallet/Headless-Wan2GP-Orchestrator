@@ -1,0 +1,1 @@
+web: python3 gpu_orchestrator/main.py

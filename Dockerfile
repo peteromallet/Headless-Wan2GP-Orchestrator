@@ -28,5 +28,5 @@ COPY . .
 RUN useradd -m -u 1000 worker && chown -R worker:worker /app
 USER worker
 
-# Default command - Railway will override this with startCommand
-CMD ["echo", "Railway should override this with startCommand"]
+# Default command - start the orchestrator as a module
+CMD ["python3", "-m", "gpu_orchestrator.main", "continuous"]

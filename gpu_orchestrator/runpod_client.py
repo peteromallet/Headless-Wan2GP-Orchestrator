@@ -805,8 +805,8 @@ fi
 # Create logs directory FIRST (critical for debugging)
 mkdir -p /workspace/Headless-Wan2GP/logs
 
-# Initialize comprehensive logging IMMEDIATELY with gpu_ prefix
-LOG_FILE="/workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log"
+# Initialize comprehensive logging IMMEDIATELY
+LOG_FILE="/workspace/Headless-Wan2GP/logs/{worker_id}.log"
 echo "=========================================" > "$LOG_FILE"
 echo "🚀 WORKER STARTUP SCRIPT EXECUTION BEGIN" >> "$LOG_FILE"
 echo "=========================================" >> "$LOG_FILE"
@@ -986,51 +986,114 @@ echo "=========================================" >> $LOG_FILE 2>&1
             logger.error(f"Failed to create startup script for worker {worker_id}: {result}")
             return False
         
-        logger.info(f"Startup script created successfully, verifying and executing...")
+        logger.info(f"Startup script created successfully, launching in background...")
         
-        # Verify the script was created and make it executable
-        # First ensure logs directory exists (may not exist if Headless-Wan2GP was just cloned)
-        verify_and_execute_command = f"""
+        # Launch script in background so it doesn't block the orchestrator
+        # The script will run for ~20 minutes installing dependencies
+        launch_command = f"""
         mkdir -p /workspace/Headless-Wan2GP/logs
-        echo "=== SCRIPT EXECUTION DEBUG ===" > /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
-        echo "Script path: {script_path}" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
-        echo "Script exists: $(ls -la {script_path})" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
-        echo "Script size: $(wc -l < {script_path}) lines" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
-        echo "Making executable and running at $(date)..." >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
         chmod +x {script_path}
-        {script_path} >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log 2>&1 || echo "Script failed with exit code $?" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
-        echo "Script execution completed at $(date)" >> /workspace/Headless-Wan2GP/logs/{worker_id}_script.log
+        nohup {script_path} > /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log 2>&1 &
+        echo $!
         """
         
-        result = self.execute_command_on_worker(runpod_id, verify_and_execute_command, timeout=120)
+        result = self.execute_command_on_worker(runpod_id, launch_command, timeout=10)
         
         if result:
             exit_code, stdout, stderr = result
-            logger.info(f"Worker startup script executed with exit code {exit_code}")
-            if stdout and stdout.strip():
-                logger.info(f"Script stdout: {stdout.strip()}")
-            if stderr and stderr.strip():
-                logger.warning(f"Script stderr: {stderr.strip()}")
-            
-            # Retrieve the detailed startup log from the pod for debugging
-            log_retrieval_command = f"""
-            if [ -f /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log ]; then
-                echo "=== STARTUP LOG CONTENTS ==="
-                tail -100 /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log
-            else
-                echo "WARNING: Startup log file not found at /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log"
-            fi
-            """
-            
-            log_result = self.execute_command_on_worker(runpod_id, log_retrieval_command, timeout=10)
-            if log_result and log_result[1]:
-                logger.info(f"📋 Worker {worker_id} startup log (last 100 lines):")
-                logger.info(f"\n{log_result[1]}")
-            
-            return exit_code == 0
+            if exit_code == 0:
+                pid = stdout.strip()
+                logger.info(f"✅ Worker {worker_id} startup script launched in background (PID: {pid})")
+                logger.info(f"   Script will run for ~20 minutes to install dependencies")
+                logger.info(f"   Worker will be checked periodically for completion")
+                return True
+            else:
+                logger.error(f"Failed to launch startup script: exit code {exit_code}")
+                if stderr and stderr.strip():
+                    logger.error(f"Error: {stderr.strip()}")
+                return False
         else:
-            logger.error(f"Failed to execute worker startup script")
+            logger.error(f"Failed to execute worker startup launch command")
             return False
+    
+    def check_worker_startup_status(self, worker_id: str, runpod_id: str) -> Dict[str, Any]:
+        """Check status of a worker that's currently starting up.
+        
+        Returns:
+            Dict with keys:
+                - status: 'initializing', 'active', 'failed'
+                - message: Human-readable status message
+                - logs: Startup logs if available
+        """
+        try:
+            # Check if worker is logging to Supabase (means worker.py started)
+            from database import DatabaseClient
+            db = DatabaseClient()
+            
+            logs = db.supabase.table('system_logs').select('id').eq('source_type', 'worker').eq('worker_id', worker_id).limit(1).execute()
+            
+            if logs.data:
+                # Worker is actively logging - retrieve and log startup logs
+                logger.info(f"✅ Worker {worker_id} is now logging - retrieving startup logs")
+                
+                log_retrieval_command = f"""
+                if [ -f /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log ]; then
+                    echo "=== WORKER STARTUP LOG ==="
+                    tail -100 /workspace/Headless-Wan2GP/logs/gpu_{worker_id}.log
+                fi
+                if [ -f /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log ]; then
+                    echo "=== INITIALIZATION LOG ==="
+                    tail -200 /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log
+                fi
+                """
+                
+                result = self.execute_command_on_worker(runpod_id, log_retrieval_command, timeout=15)
+                if result and result[1]:
+                    startup_logs = result[1]
+                    logger.info(f"📋 Startup logs for {worker_id}:\n{startup_logs}")
+                    
+                    return {
+                        'status': 'active',
+                        'message': 'Worker successfully started and logging',
+                        'logs': startup_logs
+                    }
+                else:
+                    return {
+                        'status': 'active',
+                        'message': 'Worker is logging but could not retrieve startup logs',
+                        'logs': None
+                    }
+            else:
+                # Worker not logging yet - check for errors in startup log
+                check_command = f"""
+                if [ -f /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log ]; then
+                    echo "=== CHECKING FOR ERRORS ==="
+                    tail -50 /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log | grep -i "error\\|fail\\|exception" || echo "No errors found in recent logs"
+                fi
+                """
+                
+                result = self.execute_command_on_worker(runpod_id, check_command, timeout=10)
+                if result and result[1] and 'error' in result[1].lower():
+                    logger.warning(f"⚠️ Potential errors in {worker_id} startup:\n{result[1]}")
+                    return {
+                        'status': 'initializing',
+                        'message': 'Worker still initializing, potential errors detected',
+                        'logs': result[1]
+                    }
+                
+                return {
+                    'status': 'initializing',
+                    'message': 'Worker still installing dependencies',
+                    'logs': None
+                }
+                
+        except Exception as e:
+            logger.error(f"Error checking worker {worker_id} startup status: {e}")
+            return {
+                'status': 'unknown',
+                'message': f'Error checking status: {e}',
+                'logs': None
+            }
     
     def terminate_worker(self, runpod_id: str) -> bool:
         """Terminate a worker pod on Runpod."""
@@ -1197,11 +1260,13 @@ echo "=========================================" >> $LOG_FILE 2>&1
                 if ssh_details and ssh_details.get('ip') and ssh_details.get('port'):
                     logger.info(f"SSH available for {worker_id}: {ssh_details['ip']}:{ssh_details['port']}")
                     
-                    # Worker is ready for start_worker_process()
+                    # Pod is ready for startup script launch, but worker should stay "spawning"
+                    # until worker.py actually starts and begins logging
                     return {
-                        "status": "active",
+                        "status": "spawning",
                         "ssh_details": ssh_details,
-                        "ready": True
+                        "ready": True,
+                        "message": "Pod ready, startup script can be launched"
                     }
                 else:
                     # Pod is running but SSH details are incomplete/missing
@@ -1216,15 +1281,16 @@ echo "=========================================" >> $LOG_FILE 2>&1
                     
                     if ssh_ip and ssh_port:
                         logger.info(f"SSH details found in runtime for {worker_id}: {ssh_ip}:{ssh_port}")
-                        # Use runtime details directly
+                        # Pod is ready for startup script launch, but worker should stay "spawning"
                         return {
-                            "status": "active",
+                            "status": "spawning",
                             "ssh_details": {
                                 "ip": ssh_ip,
                                 "port": ssh_port,
                                 "password": "runpod"
                             },
-                            "ready": True
+                            "ready": True,
+                            "message": "Pod ready, startup script can be launched"
                         }
                     else:
                         logger.warning(f"Pod {runpod_id} is running but SSH details incomplete - waiting...")
