@@ -122,7 +122,7 @@ class OrchestratorControlLoop:
             
             # Set cycle number in logging context for database logging
             try:
-                from logging_config import set_current_cycle
+                from .logging_config import set_current_cycle
                 set_current_cycle(self.cycle_count)
             except Exception:
                 pass  # Database logging not enabled, that's okay
@@ -619,8 +619,8 @@ class OrchestratorControlLoop:
                     if await self._is_worker_idle_with_timeout(worker, dynamic_idle_timeout):
                         terminatable_idle_workers.append(worker)
                 
-                # Sort by last activity (oldest first) to terminate least recently used
-                terminatable_idle_workers.sort(key=lambda w: w.get('last_heartbeat', w['created_at']))
+                # Sort by creation time (newest first) to keep warmed-up workers and terminate freshly-spawned ones
+                terminatable_idle_workers.sort(key=lambda w: w['created_at'], reverse=True)
                 
                 # Calculate how many we can terminate while respecting idle buffer
                 # We need to keep at least machines_to_keep_idle workers idle
@@ -669,6 +669,40 @@ class OrchestratorControlLoop:
                 
                 logger.critical(f"🚀 SCALING UP: Spawning {workers_needed} workers (current: {effective_capacity}, desired: {desired_workers})")
                 logger.info(f"Scaling up: need {workers_needed} more workers (current: {effective_capacity}, desired: {desired_workers})")
+                
+                # Log detailed task information that triggered the scale-up
+                if detailed_counts:
+                    queued_tasks = detailed_counts.get('queued_tasks', [])
+                    active_tasks = detailed_counts.get('active_tasks', [])
+                    
+                    if queued_tasks:
+                        logger.info(f"📋 QUEUED TASKS triggering scale-up ({len(queued_tasks)} tasks):")
+                        for i, task in enumerate(queued_tasks[:10], 1):  # Log up to 10 tasks
+                            task_id = task.get('task_id', 'unknown')[:8]
+                            task_type = task.get('task_type', 'unknown')
+                            user_id = task.get('user_id', 'unknown')
+                            created_at = task.get('created_at', 'unknown')
+                            if created_at != 'unknown':
+                                # Extract just the time part
+                                created_at = created_at[11:19] if len(created_at) > 19 else created_at
+                            logger.info(f"   {i}. {task_id}... | {task_type:25} | user: {user_id} | created: {created_at}")
+                        
+                        if len(queued_tasks) > 10:
+                            logger.info(f"   ... and {len(queued_tasks) - 10} more queued tasks")
+                    
+                    if active_tasks:
+                        logger.info(f"📋 ACTIVE TASKS currently being processed ({len(active_tasks)} tasks):")
+                        for i, task in enumerate(active_tasks[:5], 1):  # Log up to 5 active tasks
+                            task_id = task.get('task_id', 'unknown')[:8]
+                            task_type = task.get('task_type', 'unknown')
+                            worker_id = task.get('worker_id', 'unknown')
+                            started_at = task.get('started_at', 'unknown')
+                            if started_at != 'unknown':
+                                started_at = started_at[11:19] if len(started_at) > 19 else started_at
+                            logger.info(f"   {i}. {task_id}... | {task_type:25} | worker: {worker_id} | started: {started_at}")
+                        
+                        if len(active_tasks) > 5:
+                            logger.info(f"   ... and {len(active_tasks) - 5} more active tasks")
                 
                 # Also log to stderr
                 import sys
@@ -1241,58 +1275,33 @@ class OrchestratorControlLoop:
             return 0
     
     async def _perform_basic_health_check(self, worker: Dict[str, Any]) -> bool:
-        """Perform a basic health check on an idle worker."""
+        """
+        Perform a basic health check on an idle worker.
+        
+        Relies on heartbeat to determine if worker is alive.
+        If the worker is actively heartbeating, it means the worker script
+        is running and healthy - no need for SSH or other checks.
+        """
         worker_id = worker['id']
         logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Starting basic health check")
         
         try:
-            metadata = worker.get('metadata', {})
-            runpod_id = metadata.get('runpod_id')
-            
-            if not runpod_id:
-                logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ No RunPod ID found")
-                return False
-            
-            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Checking RunPod status for pod {runpod_id}")
-            
-            # Check if the pod is still running
-            pod_status = self.runpod.get_pod_status(runpod_id)
-            if not pod_status:
-                logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ Could not get pod status from RunPod API")
-                return False
-            
-            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Pod status: {pod_status.get('desired_status', 'UNKNOWN')}")
-            
-            # Pod should be in RUNNING state
-            if pod_status.get('desired_status') != 'RUNNING':
-                logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  Pod not in RUNNING state: {pod_status.get('desired_status')}")
-                return False
-            
-            # Optionally check SSH connectivity (quick timeout)
-            ssh_details = metadata.get('ssh_details', {})
-            if ssh_details and 'ip' in ssh_details and 'port' in ssh_details:
-                logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] Testing SSH connectivity to {ssh_details['ip']}:{ssh_details['port']}")
+            # Check if worker has a recent heartbeat
+            if worker.get('last_heartbeat'):
+                heartbeat_time = datetime.fromisoformat(worker['last_heartbeat'].replace('Z', '+00:00'))
+                heartbeat_age = (datetime.now(timezone.utc) - heartbeat_time).total_seconds()
                 
-                # This is a lightweight check - just see if port is open
-                import socket
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5)  # 5 second timeout
-                try:
-                    result = sock.connect_ex((ssh_details['ip'], ssh_details['port']))
-                    sock.close()
-                    if result == 0:
-                        logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] ✅ SSH port is accessible")
-                        return True
-                    else:
-                        logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  SSH port not accessible (result: {result})")
-                        return False
-                except Exception as ssh_e:
-                    logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  SSH connectivity test failed: {ssh_e}")
+                # If heartbeat is recent (< 60s), worker is healthy
+                if heartbeat_age < 60:
+                    logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] ✅ Recent heartbeat ({heartbeat_age:.1f}s old) - worker is healthy")
+                    return True
+                else:
+                    logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  Stale heartbeat ({heartbeat_age:.1f}s old)")
                     return False
-            
-            # If we can't check SSH, assume healthy if pod is running
-            logger.info(f"💓 HEALTH_CHECK [Worker {worker_id}] ✅ Pod is running (SSH check skipped)")
-            return True
+            else:
+                # No heartbeat ever received
+                logger.warning(f"💓 HEALTH_CHECK [Worker {worker_id}] ⚠️  No heartbeat received")
+                return False
             
         except Exception as e:
             logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ Health check failed: {e}")
