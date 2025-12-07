@@ -63,7 +63,8 @@ The orchestrator is **headless** – it exposes no HTTP server by default. All s
 | **`gpu_orchestrator/`** | GPU orchestration logic | `main.py`, `control_loop.py`, `database.py`, `runpod_client.py`, `logging_config.py` |
 | **`scripts/`** | CLI utilities & smoke tests | `spawn_gpu.py`, `shutdown_all_workers.py`, `dashboard.py`, `test_supabase.py` |
 | **`sql/`** | Versioned SQL migrations & views | `*_add_missing_columns.sql`, `*_create_rpc_functions_existing.sql`, ... |
-| **`deployment/`** | Container & infra configs | `Dockerfile`, `docker-compose.yml`, `aws-ecs-task-definition.json`, `kubernetes-cronjob.yaml`, `google-cloud-run.yaml` |
+| **`api_orchestrator/Dockerfile`** | API orchestrator Docker config | Railway deployment |
+| **`gpu_orchestrator/Dockerfile`** | GPU orchestrator Docker config | Railway deployment |
 | **`tests/`** | PyTest suite placeholders | `test_*.py` |
 | **Docs & Plans** | Architecture & guides | `orchestrator_plan.md`, `DEPLOYMENT_GUIDE.md`, `user_checklist.md`, **this file** |
 

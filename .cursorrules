@@ -1,0 +1,38 @@
+# Headless WGP Orchestrator - Cursor Rules
+
+## Deployment
+
+To deploy changes to Railway:
+
+```bash
+# Deploy both API and GPU orchestrators
+./deploy_to_railway.sh
+
+# Deploy only GPU orchestrator
+./deploy_to_railway.sh --gpu
+
+# Deploy only API orchestrator
+./deploy_to_railway.sh --api
+```
+
+## Debugging
+
+Use the unified debug tool for all debugging:
+
+```bash
+python scripts/debug.py task <task_id>      # Investigate a task
+python scripts/debug.py worker <worker_id>  # Check worker health
+python scripts/debug.py health              # System overview
+python scripts/debug.py orchestrator        # Is orchestrator alive?
+python scripts/debug.py runpod              # Find orphaned pods
+```
+
+See `structure_docs/debugging.md` for full documentation.
+
+## Architecture
+
+- `api_orchestrator/` - Handles API-based tasks (qwen_image_style, video_upscale, etc.)
+- `gpu_orchestrator/` - Manages GPU workers on RunPod for heavy compute tasks
+- `scripts/` - Debugging and management utilities
+- `sql/` - Database migrations
+

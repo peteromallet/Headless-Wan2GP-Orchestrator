@@ -32,6 +32,61 @@ async def download_url_content(client: httpx.AsyncClient, url: str) -> bytes:
         raise
 
 
+async def upload_to_supabase_storage_only(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str) -> str:
+    """
+    Upload file data to Supabase storage WITHOUT marking task complete.
+    Returns the public URL of the uploaded file.
+    Used for intermediate files that need to be uploaded but task is not yet complete.
+    """
+    try:
+        supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        
+        if not supabase_url:
+            raise Exception("SUPABASE_URL not configured")
+            
+        auth_token = os.getenv('SUPABASE_ACCESS_TOKEN') or os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+        
+        # Sanitize filename
+        safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-").strip()
+        if not safe_filename:
+            safe_filename = f"task_{task_id}.bin"
+        
+        # Guess content type from filename
+        content_type = mimetypes.guess_type(safe_filename)[0] or 'application/octet-stream'
+        
+        file_size_mb = len(file_data) / (1024 * 1024)
+        logger.info(f"Uploading {len(file_data)} bytes ({file_size_mb:.2f}MB) to Supabase storage (no task completion) as {safe_filename}")
+        
+        # Construct storage path
+        storage_path = f"task_outputs/{safe_filename}"
+        upload_url = f"{supabase_url}/storage/v1/object/image_uploads/{storage_path}"
+        
+        headers = {
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": content_type,
+            "x-upsert": "true"
+        }
+        
+        # Upload directly to storage
+        logger.info(f"Uploading directly to storage path: {storage_path}")
+        response = await client.post(upload_url, content=file_data, headers=headers, timeout=120)
+        
+        if response.status_code not in (200, 201):
+            error_text = response.text
+            logger.error(f"Storage upload failed with status {response.status_code}: {error_text}")
+            response.raise_for_status()
+        
+        # Construct public URL
+        public_url = f"{supabase_url}/storage/v1/object/public/image_uploads/{storage_path}"
+        
+        logger.info(f"Upload successful (no task completion): {public_url}")
+        return public_url
+        
+    except Exception as e:
+        logger.error(f"Failed to upload to Supabase storage: {e}")
+        raise
+
+
 async def upload_to_supabase_storage(client: httpx.AsyncClient, task_id: str, file_data: bytes, filename: str, first_frame_data: str = None) -> str:
     """
     Upload file data to Supabase storage.

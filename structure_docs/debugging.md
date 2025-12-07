@@ -97,4 +97,40 @@ The orchestrator performs health checks on **idle workers** (workers with no act
 
 ---
 
+## Troubleshooting: Tasks Not Creating Generations
+
+### Symptom
+Tasks show `generation_created: false` even though they have:
+- ✅ Status = "Complete"
+- ✅ Valid `output_location` URL
+- ✅ No error messages
+
+### Root Cause (Fixed Nov 2025)
+Both the API orchestrator and GPU workers were calling the wrong edge function endpoint when marking tasks complete:
+- **Old (broken):** `update-task-status` or `mark-task-complete` - Only sets status to "Complete"
+- **New (fixed):** `complete-task` - Sets status AND creates generation records
+
+### Impact
+**API Orchestrator tasks:**
+- `qwen_image_edit`
+- `video_upscale`
+- Other API-based tasks
+- **Fix:** `api_orchestrator/task_utils.py` now uses `complete-task` endpoint
+
+**GPU Worker tasks (Headless-Wan2GP):**
+- `travel_orchestrator`
+- `travel_segment`
+- `travel_stitch`
+- `video_generation`
+- Other GPU-based tasks
+- **Fix:** `gpu_orchestrator/runpod_client.py` now passes `SUPABASE_EDGE_COMPLETE_TASK_URL` to workers
+
+### Fix Locations
+1. **API Orchestrator:** `api_orchestrator/task_utils.py` - `_get_supabase_edge_urls()` function
+2. **GPU Workers:** `gpu_orchestrator/runpod_client.py` - `spawn_worker()` method now passes correct edge function URLs to workers
+
+**Note:** The GPU worker fix requires redeploying workers. Existing workers spawned before this fix will still use the wrong endpoint.
+
+---
+
 **💡 Pro Tip:** Start with `debug.py health` for a quick system overview, then drill down into specific tasks or workers as needed.

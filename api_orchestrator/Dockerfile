@@ -28,5 +28,5 @@ COPY . /app/api_orchestrator/
 RUN useradd -m -u 1000 apiworker && chown -R apiworker:apiworker /app
 USER apiworker
 
-# Default command - runs the API orchestrator
-CMD ["python", "main.py"]
+# Default command - runs the API orchestrator as a module
+CMD ["python", "-m", "api_orchestrator.main"]

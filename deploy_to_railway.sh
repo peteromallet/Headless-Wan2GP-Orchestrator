@@ -2,10 +2,53 @@
 
 # Railway Deployment Script
 # Deploys both API and GPU orchestrator services to Railway
+# Usage:
+#   ./deploy_to_railway.sh           # Deploy both services
+#   ./deploy_to_railway.sh --gpu     # Deploy GPU orchestrator only
+#   ./deploy_to_railway.sh --api     # Deploy API orchestrator only
 
 set -e  # Exit on any error
 
+# Parse command line arguments
+DEPLOY_GPU=false
+DEPLOY_API=false
+
+if [[ $# -eq 0 ]]; then
+    # No arguments - deploy both
+    DEPLOY_GPU=true
+    DEPLOY_API=true
+else
+    # Parse flags
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --gpu)
+                DEPLOY_GPU=true
+                shift
+                ;;
+            --api)
+                DEPLOY_API=true
+                shift
+                ;;
+            *)
+                echo "❌ Unknown option: $1"
+                echo "Usage: $0 [--gpu] [--api]"
+                echo "  --gpu    Deploy GPU orchestrator only"
+                echo "  --api    Deploy API orchestrator only"
+                echo "  (no args) Deploy both services"
+                exit 1
+                ;;
+        esac
+    done
+fi
+
 echo "🚀 Starting Railway deployment..."
+if [[ "$DEPLOY_GPU" == true ]] && [[ "$DEPLOY_API" == true ]]; then
+    echo "   Deploying: Both services"
+elif [[ "$DEPLOY_GPU" == true ]]; then
+    echo "   Deploying: GPU Orchestrator only"
+elif [[ "$DEPLOY_API" == true ]]; then
+    echo "   Deploying: API Orchestrator only"
+fi
 
 # Check if Railway CLI is installed
 if ! command -v railway &> /dev/null; then
@@ -52,13 +95,23 @@ cd "$SCRIPT_DIR"
 echo "📍 Working directory: $(pwd)"
 
 # Deploy API Orchestrator
-deploy_service "API Orchestrator" "api_orchestrator"
+if [[ "$DEPLOY_API" == true ]]; then
+    deploy_service "API Orchestrator" "api_orchestrator"
+fi
 
 # Deploy GPU Orchestrator  
-deploy_service "GPU Orchestrator" "gpu_orchestrator"
+if [[ "$DEPLOY_GPU" == true ]]; then
+    deploy_service "GPU Orchestrator" "gpu_orchestrator"
+fi
 
 echo ""
-echo "🎉 All services deployed successfully!"
+if [[ "$DEPLOY_GPU" == true ]] && [[ "$DEPLOY_API" == true ]]; then
+    echo "🎉 All services deployed successfully!"
+elif [[ "$DEPLOY_GPU" == true ]]; then
+    echo "🎉 GPU Orchestrator deployed successfully!"
+elif [[ "$DEPLOY_API" == true ]]; then
+    echo "🎉 API Orchestrator deployed successfully!"
+fi
 echo ""
 echo "📊 Monitor your deployments:"
 echo "   Railway dashboard: https://railway.app"

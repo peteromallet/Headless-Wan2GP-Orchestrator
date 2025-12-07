@@ -150,6 +150,9 @@ python worker.py --db-type supabase \
 | `WORKER_ID` | Orchestrator | Unique worker identifier |
 | `SUPABASE_URL` | Orchestrator env | Database connection |
 | `SUPABASE_SERVICE_ROLE_KEY` | Orchestrator env | Auth credentials |
+| `SUPABASE_ANON_KEY` | Orchestrator env | Anon key for public operations |
+| `SUPABASE_EDGE_COMPLETE_TASK_URL` | Auto-constructed | Edge function URL for completing tasks with generation records |
+| `SUPABASE_EDGE_MARK_FAILED_URL` | Auto-constructed | Edge function URL for marking tasks as failed |
 | `DB_TYPE` | Hardcoded | Always `supabase` for orchestrator |
 | `SUPABASE_VIDEO_BUCKET` | User config | Storage bucket name |
 | `REPLICATE_API_TOKEN` | Orchestrator env | API token for Replicate services |

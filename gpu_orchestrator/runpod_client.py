@@ -538,12 +538,16 @@ class RunpodClient:
             return None
         
         # Prepare environment variables for the worker
+        supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
         env_vars = {
             "WORKER_ID": worker_id,
-            "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
+            "SUPABASE_URL": supabase_url,
             "SUPABASE_SERVICE_ROLE_KEY": os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
             "SUPABASE_ANON_KEY": os.getenv("SUPABASE_ANON_KEY", ""),
             "REPLICATE_API_TOKEN": os.getenv("REPLICATE_API_TOKEN", ""),
+            # Pass the correct edge function URLs to GPU workers
+            "SUPABASE_EDGE_COMPLETE_TASK_URL": f"{supabase_url}/functions/v1/complete-task" if supabase_url else "",
+            "SUPABASE_EDGE_MARK_FAILED_URL": f"{supabase_url}/functions/v1/mark-task-failed" if supabase_url else "",
         }
         
         # Merge in any additional environment variables
@@ -734,8 +738,16 @@ if [ ! -d "/workspace/Headless-Wan2GP" ]; then
     
     cd Headless-Wan2GP || exit 1
     
-    echo "Step 2: Installing system dependencies..."
-    apt-get update && apt-get install -y python3.10-venv ffmpeg || exit 1
+    echo "Step 2: Installing system dependencies (python3.10-venv ffmpeg)..."
+    apt-get update > /tmp/apt-update.log 2>&1
+    apt-get install -y python3.10-venv ffmpeg > /tmp/apt-install.log 2>&1
+    if [ $? -eq 0 ]; then
+        echo "✅ Dependencies installed successfully"
+    else
+        echo "❌ Dependency installation failed, see /tmp/apt-install.log"
+        tail -20 /tmp/apt-install.log
+        exit 1
+    fi
     
     echo "Step 3: Creating virtual environment..."
     python3.10 -m venv venv || exit 1
@@ -759,8 +771,16 @@ else
     if [ ! -d "venv" ] || [ ! -f "venv/bin/activate" ]; then
         echo "⚠️  Virtual environment missing or incomplete, rebuilding..."
         
-        echo "Step 1: Installing system dependencies..."
-        apt-get update && apt-get install -y python3.10-venv ffmpeg || exit 1
+        echo "Step 1: Installing system dependencies (python3.10-venv ffmpeg)..."
+        apt-get update > /tmp/apt-update.log 2>&1
+        apt-get install -y python3.10-venv ffmpeg > /tmp/apt-install.log 2>&1
+        if [ $? -eq 0 ]; then
+            echo "✅ Dependencies installed successfully"
+        else
+            echo "❌ Dependency installation failed, see /tmp/apt-install.log"
+            tail -20 /tmp/apt-install.log
+            exit 1
+        fi
         
         echo "Step 2: Creating virtual environment..."
         python3.10 -m venv venv || exit 1
@@ -853,22 +873,18 @@ echo "After commit:  $AFTER_COMMIT" >> "$LOG_FILE" 2>&1
 
 # Install essential dependencies if needed (quietly)
 echo "=== INSTALLING DEPENDENCIES ===" >> $LOG_FILE 2>&1
-
-# Update package list first
-echo "Updating package list..." >> $LOG_FILE 2>&1
-if apt-get update -qq >> $LOG_FILE 2>&1; then
-    echo "Package list updated successfully" >> $LOG_FILE 2>&1
+echo "Installing dependencies (python3.10-venv ffmpeg git curl wget)..."
+apt-get update > /tmp/apt-update.log 2>&1
+apt-get install -y python3.10-venv ffmpeg git curl wget > /tmp/apt-install.log 2>&1
+if [ $? -eq 0 ]; then
+    echo "✅ Dependencies installed successfully"
+    echo "✅ Dependencies installed successfully" >> $LOG_FILE 2>&1
 else
-    echo "WARNING: Package list update failed" >> $LOG_FILE 2>&1
-fi
-
-# Install dependencies with proper error checking
-echo "Installing python3.10-venv ffmpeg git curl wget..." >> $LOG_FILE 2>&1
-if apt-get install -y -qq python3.10-venv ffmpeg git curl wget >> $LOG_FILE 2>&1; then
-    echo "Dependencies installed successfully" >> $LOG_FILE 2>&1
-else
+    echo "❌ Dependency installation failed, see /tmp/apt-install.log"
     echo "ERROR: Dependency installation failed!" >> $LOG_FILE 2>&1
-    echo "Attempting to continue, but worker may not function correctly" >> $LOG_FILE 2>&1
+    tail -20 /tmp/apt-install.log
+    tail -20 /tmp/apt-install.log >> $LOG_FILE 2>&1
+    exit 1
 fi
 
 # Verify critical dependencies
@@ -949,7 +965,7 @@ echo "SUPABASE_SERVICE_ROLE_KEY: ${{SUPABASE_SERVICE_ROLE_KEY:0:20}}..." >> $LOG
 
 # Start the actual worker process
 echo "=== STARTING MAIN WORKER ===" >> $LOG_FILE 2>&1
-WORKER_CMD="python worker.py --supabase-url $SUPABASE_URL --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID"
+WORKER_CMD="python worker.py --supabase-url $SUPABASE_URL --supabase-access-token $SUPABASE_SERVICE_ROLE_KEY --worker $WORKER_ID --debug"
 echo "Command: $WORKER_CMD" >> $LOG_FILE 2>&1
 echo "Starting at: $(date)" >> $LOG_FILE 2>&1
 

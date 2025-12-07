@@ -29,7 +29,7 @@ class OrchestratorHealthMonitor:
         Returns:
             True if healthy, False if degraded
         """
-        from logging_config import get_db_log_handler
+        from .logging_config import get_db_log_handler
         
         handler = get_db_log_handler()
         

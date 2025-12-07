@@ -18,7 +18,7 @@ def _get_supabase_edge_urls() -> Dict[str, str]:
     base_url = os.getenv("SUPABASE_URL", "").rstrip("/")
     return {
         "claim": f"{base_url}/functions/v1/claim-next-task" if base_url else "",
-        "complete": f"{base_url}/functions/v1/mark-task-complete" if base_url else "",
+        "complete": f"{base_url}/functions/v1/complete-task" if base_url else "",
         "fail": f"{base_url}/functions/v1/mark-task-failed" if base_url else "",
     }
 

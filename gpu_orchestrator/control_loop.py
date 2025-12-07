@@ -65,6 +65,13 @@ class OrchestratorControlLoop:
         self.last_scale_down_at = None
         self.last_scale_up_at = None
         
+        # Storage monitoring configuration
+        self.storage_check_interval_cycles = int(os.getenv("STORAGE_CHECK_INTERVAL_CYCLES", "10"))  # Check every N cycles
+        self.storage_min_free_gb = int(os.getenv("STORAGE_MIN_FREE_GB", "50"))  # Minimum free space required
+        self.storage_max_percent_used = int(os.getenv("STORAGE_MAX_PERCENT_USED", "85"))  # Expand if usage exceeds this
+        self.storage_expansion_increment_gb = int(os.getenv("STORAGE_EXPANSION_INCREMENT_GB", "50"))  # How much to expand by
+        self.last_storage_check_cycle = 0  # Track when we last checked storage
+        
         # Health monitor
         self.health_monitor = OrchestratorHealthMonitor()
         
@@ -499,6 +506,10 @@ class OrchestratorControlLoop:
             # 2c. FAILSAFE HEALTH CHECK - Catch any workers that slipped through normal checks
             await self._failsafe_stale_worker_check(workers, summary)
             
+            # 2d. STORAGE HEALTH CHECK - Check and expand storage volumes if needed
+            # Only runs every N cycles to avoid excessive SSH overhead
+            await self._check_storage_health(active_workers, summary)
+            
             # 3. REASSIGN orphaned tasks from failed workers
             # Note: This is now handled immediately in _mark_worker_error() to prevent
             # tasks from being stuck in 'In Progress' state. This section is kept for
@@ -533,6 +544,11 @@ class OrchestratorControlLoop:
             unassigned_reset_count = await self.db.reset_unassigned_orphaned_tasks(timeout_minutes=15)
             if unassigned_reset_count > 0:
                 summary['actions']['tasks_reset'] += unassigned_reset_count
+            
+            # Check for API worker orphaned tasks (api-worker-* not tracked in workers table)
+            api_reset_count = await self.db.reset_api_worker_orphaned_tasks(timeout_minutes=5)
+            if api_reset_count > 0:
+                summary['actions']['tasks_reset'] += api_reset_count
             
             # 4. SCALE DOWN: Idle workers above minimum
             # Refresh active workers list after health checks
@@ -626,10 +642,23 @@ class OrchestratorControlLoop:
                 # We need to keep at least machines_to_keep_idle workers idle
                 max_terminatable_by_buffer = max(0, len(idle_workers) - self.machines_to_keep_idle)
                 max_terminatable_by_capacity = total_workers - desired_workers
-                workers_to_terminate = min(len(terminatable_idle_workers), max_terminatable_by_buffer, max_terminatable_by_capacity)
+                
+                # CRITICAL FIX: Never terminate active workers below MIN_ACTIVE_GPUS
+                # Spawning workers are unreliable - they might fail to initialize
+                # We must maintain at least min_active_gpus ACTIVE (not spawning) workers
+                max_terminatable_by_min_active = max(0, len(active_workers) - self.min_active_gpus)
+                
+                workers_to_terminate = min(
+                    len(terminatable_idle_workers), 
+                    max_terminatable_by_buffer, 
+                    max_terminatable_by_capacity,
+                    max_terminatable_by_min_active  # New constraint
+                )
                 
                 if workers_to_terminate > 0:
-                    logger.info(f"Terminating {workers_to_terminate} workers (over-capacity: {total_workers} > {desired_workers}, idle buffer requires keeping {self.machines_to_keep_idle} idle)")
+                    logger.info(f"Terminating {workers_to_terminate} workers (over-capacity: {total_workers} > {desired_workers}, idle buffer requires keeping {self.machines_to_keep_idle} idle, min active: {self.min_active_gpus})")
+                elif max_terminatable_by_min_active == 0 and len(terminatable_idle_workers) > 0:
+                    logger.info(f"⚠️ Skipping termination: would go below MIN_ACTIVE_GPUS ({self.min_active_gpus}). Active: {len(active_workers)}, Spawning: {len(spawning_workers)}")
                 
                 for i in range(workers_to_terminate):
                     worker = terminatable_idle_workers[i]
@@ -1306,6 +1335,104 @@ class OrchestratorControlLoop:
         except Exception as e:
             logger.error(f"💓 HEALTH_CHECK [Worker {worker_id}] ❌ Health check failed: {e}")
             return False 
+    
+    async def _check_storage_health(self, active_workers: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
+        """
+        Check storage health across all storage volumes with active workers.
+        Expands storage if needed based on actual disk usage.
+        
+        Only runs every N cycles (configured by STORAGE_CHECK_INTERVAL_CYCLES).
+        """
+        # Only check storage every N cycles to avoid excessive SSH overhead
+        if self.cycle_count - self.last_storage_check_cycle < self.storage_check_interval_cycles:
+            return
+        
+        self.last_storage_check_cycle = self.cycle_count
+        logger.info(f"📦 STORAGE_CHECK Starting periodic storage health check (cycle {self.cycle_count})")
+        
+        # Group workers by storage volume
+        workers_by_storage: Dict[str, List[Dict[str, Any]]] = {}
+        for worker in active_workers:
+            storage_volume = worker.get('metadata', {}).get('storage_volume')
+            if storage_volume:
+                if storage_volume not in workers_by_storage:
+                    workers_by_storage[storage_volume] = []
+                workers_by_storage[storage_volume].append(worker)
+        
+        if not workers_by_storage:
+            logger.info(f"📦 STORAGE_CHECK No active workers with storage volume info, skipping")
+            return
+        
+        logger.info(f"📦 STORAGE_CHECK Checking {len(workers_by_storage)} storage volumes: {list(workers_by_storage.keys())}")
+        
+        # Track storage health in summary
+        if 'storage_health' not in summary:
+            summary['storage_health'] = {}
+        
+        for storage_name, storage_workers in workers_by_storage.items():
+            try:
+                # Get volume ID for this storage
+                volume_id = self.runpod._get_storage_volume_id(storage_name)
+                if not volume_id:
+                    logger.warning(f"📦 STORAGE_CHECK Could not find volume ID for '{storage_name}'")
+                    continue
+                
+                # Pick a worker to check actual disk usage (prefer one with recent heartbeat)
+                check_worker = None
+                for w in storage_workers:
+                    if w.get('last_heartbeat'):
+                        try:
+                            heartbeat_time = datetime.fromisoformat(w['last_heartbeat'].replace('Z', '+00:00'))
+                            heartbeat_age = (datetime.now(timezone.utc) - heartbeat_time).total_seconds()
+                            if heartbeat_age < 60:  # Only use workers with recent heartbeat
+                                runpod_id = w.get('metadata', {}).get('runpod_id')
+                                if runpod_id:
+                                    check_worker = w
+                                    break
+                        except Exception:
+                            continue
+                
+                if not check_worker:
+                    logger.warning(f"📦 STORAGE_CHECK No healthy worker available to check '{storage_name}'")
+                    continue
+                
+                runpod_id = check_worker.get('metadata', {}).get('runpod_id')
+                logger.info(f"📦 STORAGE_CHECK Checking '{storage_name}' via worker {check_worker['id']} (pod {runpod_id})")
+                
+                # Check storage health using the new method
+                health = self.runpod.check_storage_health(
+                    storage_name=storage_name,
+                    volume_id=volume_id,
+                    active_runpod_id=runpod_id,
+                    min_free_gb=self.storage_min_free_gb,
+                    max_percent_used=self.storage_max_percent_used
+                )
+                
+                summary['storage_health'][storage_name] = health
+                
+                # If storage needs expansion, do it now
+                if health.get('needs_expansion'):
+                    current_size = health.get('total_gb', 100)
+                    new_size = current_size + self.storage_expansion_increment_gb
+                    
+                    logger.warning(f"📦 STORAGE_CHECK ⚠️  '{storage_name}' needs expansion: {health.get('message')}")
+                    logger.info(f"📦 STORAGE_CHECK Expanding '{storage_name}' from {current_size}GB to {new_size}GB...")
+                    
+                    if self.runpod._expand_network_volume(volume_id, new_size):
+                        logger.info(f"📦 STORAGE_CHECK ✅ Successfully expanded '{storage_name}' to {new_size}GB")
+                        summary['storage_health'][storage_name]['expanded'] = True
+                        summary['storage_health'][storage_name]['new_size_gb'] = new_size
+                    else:
+                        logger.error(f"📦 STORAGE_CHECK ❌ Failed to expand '{storage_name}'!")
+                        summary['storage_health'][storage_name]['expansion_failed'] = True
+                else:
+                    logger.info(f"📦 STORAGE_CHECK ✅ '{storage_name}' is healthy: {health.get('message')}")
+                    
+            except Exception as e:
+                logger.error(f"📦 STORAGE_CHECK Error checking storage '{storage_name}': {e}")
+                summary['storage_health'][storage_name] = {'error': str(e)}
+        
+        logger.info(f"📦 STORAGE_CHECK Completed storage health check")
     
     async def _check_error_worker_cleanup(self, worker: Dict[str, Any]) -> None:
         """

@@ -416,4 +416,50 @@ class DatabaseClient:
             
         except Exception as e:
             logger.error(f"Failed to reset unassigned orphaned tasks: {e}")
-            return 0 
+            return 0
+    
+    async def reset_api_worker_orphaned_tasks(self, timeout_minutes: int = 5) -> int:
+        """Reset tasks stuck in 'In Progress' assigned to API workers (api-worker-*).
+        
+        API workers (like api-worker-main) are not tracked in the workers table,
+        so when the API orchestrator crashes/restarts, their in-flight tasks
+        become orphaned with no cleanup mechanism.
+        """
+        try:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+            
+            # Find tasks that are:
+            # - In Progress
+            # - Assigned to an api-worker-* (not a GPU worker)
+            # - Have been stuck for longer than the timeout
+            # - Have attempts < 3 (allow retry)
+            result = self.supabase.table('tasks').select('id, task_type, worker_id').eq('status', 'In Progress').like('worker_id', 'api-worker-%').lt('generation_started_at', cutoff_time.isoformat()).lt('attempts', 3).execute()
+            
+            if not result.data:
+                return 0
+            
+            task_ids = [task['id'] for task in result.data]
+            
+            # Reset these tasks back to Queued status
+            reset_result = self.supabase.table('tasks').update({
+                'status': 'Queued',
+                'worker_id': None,
+                'generation_started_at': None,
+                'generation_processed_at': None,
+                'error_message': 'Reset - orphaned from API worker timeout'
+            }).in_('id', task_ids).execute()
+            
+            count = len(reset_result.data) if reset_result.data else 0
+            
+            if count > 0:
+                logger.warning(f"Reset {count} orphaned API worker tasks stuck in progress for >{timeout_minutes}m")
+                if count <= 5:
+                    logger.warning(f"Reset API orphaned task IDs: {task_ids}")
+                else:
+                    logger.warning(f"Reset {count} API orphaned tasks (IDs truncated)")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to reset API worker orphaned tasks: {e}")
+            return 0

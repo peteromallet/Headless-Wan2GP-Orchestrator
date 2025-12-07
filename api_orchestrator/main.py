@@ -5,9 +5,13 @@ import json
 import logging
 import tempfile
 import base64
+import random
 from typing import Any, Dict, Optional
+from io import BytesIO
 
 import httpx
+import fal_client
+from PIL import Image
 from dotenv import load_dotenv
 
 # Load environment variables from .env at import time so module-level reads work
@@ -21,7 +25,7 @@ from .database import DatabaseClient
 setup_logging()
 
 # Import utility modules
-from .storage_utils import process_external_url_result, upload_to_supabase_storage
+from .storage_utils import process_external_url_result, upload_to_supabase_storage, upload_to_supabase_storage_only
 from .task_utils import count_tasks, claim_next_task, mark_complete, mark_failed
 from .wavespeed_utils import call_wavespeed_api
 from .video_utils import download_video_to_temp, remove_last_frame_from_video, join_videos, extract_first_frame_bytes
@@ -32,6 +36,144 @@ PARENT_POLL_SEC = int(os.getenv("API_PARENT_POLL_SEC", "10"))
 
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_resolution(resolution: str, min_dimension: int = 512, max_dimension: int = 1200) -> Optional[str]:
+    """
+    Normalize a resolution string to fit within min/max dimension constraints.
+    
+    Args:
+        resolution: Resolution string like "400x225" or "1920*1080"
+        min_dimension: Minimum size for the shortest side (default 512)
+        max_dimension: Maximum size for the longest side (default 1200)
+    
+    Returns:
+        Normalized resolution string like "512*288" or None if parsing failed
+    """
+    if not resolution:
+        return None
+    
+    parts = resolution.replace("*", "x").split("x")
+    if len(parts) != 2:
+        logger.warning(f"Invalid resolution format '{resolution}', expected WIDTHxHEIGHT")
+        return None
+    
+    try:
+        width = int(parts[0])
+        height = int(parts[1])
+    except ValueError:
+        logger.warning(f"Could not parse resolution '{resolution}' as integers")
+        return None
+    
+    original_width, original_height = width, height
+    
+    # First, scale UP if below minimum (use shortest side)
+    shortest_side = min(width, height)
+    if shortest_side < min_dimension:
+        ratio = min_dimension / shortest_side
+        width = int(width * ratio)
+        height = int(height * ratio)
+        logger.info(f"Scaled up resolution from {original_width}x{original_height} to {width}x{height} (min {min_dimension}px)")
+    
+    # Then, scale DOWN if above maximum (use longest side)
+    longest_side = max(width, height)
+    if longest_side > max_dimension:
+        ratio = max_dimension / longest_side
+        width = int(width * ratio)
+        height = int(height * ratio)
+        logger.info(f"Capped resolution to {width}x{height} (max {max_dimension}px)")
+    
+    return f"{width}*{height}"
+
+
+async def create_masked_composite_image(
+    client: httpx.AsyncClient,
+    task_id: str,
+    image_url: str,
+    mask_url: str,
+    filename_prefix: str = "composite"
+) -> str:
+    """
+    Download image and mask, create green-overlay composite, upload to Supabase.
+    Returns the public URL of the uploaded composite image.
+    
+    Args:
+        client: httpx client for downloading
+        task_id: task ID for upload naming
+        image_url: URL of the original image
+        mask_url: URL of the mask (white = areas to edit)
+        filename_prefix: prefix for uploaded filename
+    
+    Returns:
+        Public URL of the uploaded composite image
+    """
+    try:
+        # Download the original image
+        logger.info("Downloading original image...")
+        image_response = await client.get(image_url)
+        image_response.raise_for_status()
+        image = Image.open(BytesIO(image_response.content)).convert("RGB")
+        logger.info(f"Image downloaded: {image.size[0]}x{image.size[1]}")
+        
+        # Download the mask
+        logger.info("Downloading mask...")
+        mask_response = await client.get(mask_url)
+        mask_response.raise_for_status()
+        mask = Image.open(BytesIO(mask_response.content)).convert("L")  # Convert to grayscale
+        logger.info(f"Mask downloaded: {mask.size[0]}x{mask.size[1]}")
+        
+        # Resize image to a reasonable size if it's too large
+        # Keep max 1200px on the widest side while maintaining aspect ratio
+        max_dimension = 1200
+        if image.size[0] > max_dimension or image.size[1] > max_dimension:
+            # Calculate new size maintaining aspect ratio
+            ratio = min(max_dimension / image.size[0], max_dimension / image.size[1])
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            logger.info(f"Resizing image from {image.size[0]}x{image.size[1]} to {new_size[0]}x{new_size[1]}")
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Resize mask to match image dimensions if needed
+        if mask.size != image.size:
+            logger.info(f"Resizing mask from {mask.size[0]}x{mask.size[1]} to {image.size[0]}x{image.size[1]}")
+            mask = mask.resize(image.size, Image.Resampling.LANCZOS)
+            # Apply binary threshold to eliminate gray values from interpolation
+            # This ensures crisp black/white boundaries and prevents graininess
+            mask = mask.point(lambda x: 255 if x > 127 else 0)
+            logger.info("Applied binary threshold to mask after resizing")
+        
+        # Create a pure green overlay where the mask is white
+        # Create a green image of the same size
+        green_overlay = Image.new("RGB", image.size, (0, 255, 0))
+        
+        # Composite: where mask is white (255), use green; where black (0), use original image
+        # Image.composite uses the mask as an alpha channel
+        composite = Image.composite(green_overlay, image, mask)
+        
+        logger.info("Created composite image with green mask overlay")
+        
+        # Upload composite image to Supabase storage
+        # Use JPEG format with quality setting to reduce file size
+        composite_bytes = BytesIO()
+        composite.save(composite_bytes, format='JPEG', quality=95, optimize=True)
+        composite_bytes.seek(0)
+        
+        file_size_mb = len(composite_bytes.getvalue()) / (1024 * 1024)
+        logger.info(f"Composite image size: {file_size_mb:.2f}MB")
+        
+        # Upload composite WITHOUT marking task complete (we need to call Wavespeed API first)
+        composite_url = await upload_to_supabase_storage_only(
+            client,
+            task_id,
+            composite_bytes.getvalue(),
+            filename=f"{filename_prefix}_{task_id}.jpg"
+        )
+        logger.info(f"Uploaded composite image to: {composite_url}")
+        
+        return composite_url
+        
+    except Exception as e:
+        logger.error(f"Failed to process images for masked composite: {e}")
+        raise Exception(f"Image processing failed: {str(e)}")
 
 
 async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -49,65 +191,49 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
             raise Exception(f"Invalid JSON in params field: {e}")
     
     if task_type == "qwen_image_edit" or params.get("api_type") == "wavespeed":
-        # Check if loras are present to determine which endpoint to use
-        loras = params.get("loras", [])
-        has_loras = bool(loras)
+        # Use the edit-lora endpoint consistently (works with or without LoRAs)
+        endpoint_path = "wavespeed-ai/qwen-image/edit-lora"
+        logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
         
-        if has_loras:
-            # Use the edit-plus-lora endpoint when loras are present
-            endpoint_path = "wavespeed-ai/qwen-image/edit-plus-lora"
-            logger.info(f"Calling Wavespeed API endpoint with LoRAs: {endpoint_path}")
-            
-            # Map parameters to match the edit-plus-lora API format
-            image_url = params.get("image", "")
-            wavespeed_params = {
-                "enable_base64_output": params.get("enable_base64_output", False),
-                "enable_sync_mode": params.get("enable_sync_mode", False),
-                "images": [image_url] if image_url else [],  # API expects "images" as array
-                "output_format": params.get("output_format", "jpeg"),
-                "prompt": params.get("prompt", ""),
-                "seed": params.get("seed", -1),
-                "loras": []
-            }
-            
-            # Add size parameter if resolution is provided
-            resolution = params.get("resolution", "")
-            if resolution:
-                # Convert formats like "768x576" to "768*576" for the API
-                size = resolution.replace("x", "*")
-                wavespeed_params["size"] = size
-                logger.info(f"Using resolution/size: {size}")
-            
-            # Map loras - support both {"url": ..., "strength": ...} and {"path": ..., "scale": ...} formats
-            for lora in loras:
-                if isinstance(lora, dict):
-                    # Support both "url"/"strength" and "path"/"scale" formats
-                    lora_url = lora.get("url") or lora.get("path", "")
-                    lora_strength = lora.get("strength", lora.get("scale", 1.0))
-                    
-                    if lora_url:
-                        wavespeed_params["loras"].append({
-                            "path": lora_url,
-                            "scale": float(lora_strength)
-                        })
-                        logger.info(f"Added LoRA: {lora_url} with strength {lora_strength}")
-            
+        # Map parameters to match the edit-lora API format
+        image_url = params.get("image", "")
+        wavespeed_params = {
+            "enable_base64_output": params.get("enable_base64_output", False),
+            "enable_sync_mode": params.get("enable_sync_mode", False),
+            "image": image_url,  # API expects "image" as string (not array)
+            "output_format": params.get("output_format", "jpeg"),
+            "prompt": params.get("prompt", ""),
+            "seed": params.get("seed", -1),
+            "loras": []
+        }
+        
+        # Add size parameter if resolution is provided
+        resolution = params.get("resolution", "")
+        if resolution:
+            normalized_size = normalize_resolution(resolution)
+            if normalized_size:
+                wavespeed_params["size"] = normalized_size
+                logger.info(f"Using resolution/size: {normalized_size}")
+        
+        # Map loras - support both {"url": ..., "strength": ...} and {"path": ..., "scale": ...} formats
+        loras = params.get("loras", [])
+        for lora in loras:
+            if isinstance(lora, dict):
+                # Support both "url"/"strength" and "path"/"scale" formats
+                lora_url = lora.get("url") or lora.get("path", "")
+                lora_strength = lora.get("strength", lora.get("scale", 1.0))
+                
+                if lora_url:
+                    wavespeed_params["loras"].append({
+                        "path": lora_url,
+                        "scale": float(lora_strength)
+                    })
+                    logger.info(f"Added LoRA: {lora_url} with strength {lora_strength}")
+        
+        if loras:
             logger.info(f"Processing with {len(wavespeed_params['loras'])} LoRAs")
         else:
-            # Use the standard edit-plus endpoint without loras
-            endpoint_path = params.get("wavespeed_endpoint", "wavespeed-ai/qwen-image/edit-plus")
-            logger.info(f"Calling Wavespeed API endpoint: {endpoint_path}")
-            
-            # Map parameters to match the edit-plus API format
-            image_url = params.get("image", "")
-            wavespeed_params = {
-                "enable_base64_output": params.get("enable_base64_output", False),
-                "enable_sync_mode": params.get("enable_sync_mode", False),
-                "images": [image_url] if image_url else [],  # API expects "images" as array
-                "output_format": params.get("output_format", "jpeg"),
-                "prompt": params.get("prompt", ""),
-                "seed": params.get("seed", -1)
-            }
+            logger.info("Processing without LoRAs")
         
         result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
         
@@ -126,9 +252,10 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         original_prompt = params.get("prompt", "")
         modified_prompt = original_prompt
         
-        # Get style and subject parameters
+        # Get style, subject, and scene parameters
         style_strength = params.get("style_reference_strength", 0.0)
         subject_strength = params.get("subject_strength", 0.0)
+        scene_strength = params.get("scene_reference_strength", 0.0)
         subject_description = params.get("subject_description", "")
         in_this_scene = params.get("in_this_scene", False)
         
@@ -170,6 +297,14 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
             "loras": []
         }
         
+        # Add size parameter if resolution is provided
+        resolution = params.get("resolution", "")
+        if resolution:
+            normalized_size = normalize_resolution(resolution)
+            if normalized_size:
+                wavespeed_params["size"] = normalized_size
+                logger.info(f"Using resolution/size: {normalized_size}")
+        
         logger.info(f"Using reference image: {reference_image}")
         
         # Add LoRA configuration for style transfer
@@ -194,6 +329,16 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
                 "scale": float(subject_strength)
             })
             logger.info(f"Added subject LoRA: {subject_lora_path} with strength {subject_strength}")
+        
+        # Add scene LoRA if scene_strength > 0
+        if scene_strength > 0.0:
+            # Add scene LoRA for "in the same scene" transformations
+            scene_lora_path = "https://huggingface.co/peteromallet/ad_motion_loras/resolve/main/in_scene_different_perspective_000019000.safetensors"
+            wavespeed_params["loras"].append({
+                "path": scene_lora_path,
+                "scale": float(scene_strength)
+            })
+            logger.info(f"Added scene LoRA: {scene_lora_path} with strength {scene_strength}")
         
         # Add any additional LoRAs from params
         additional_loras = params.get("loras", [])
@@ -303,6 +448,13 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         input_images = effective_params.get("input_image_paths_resolved", [])
         base_prompts = effective_params.get("base_prompts_expanded", [])
         negative_prompts = effective_params.get("negative_prompts_expanded", [])
+        
+        # Fall back to base_prompt (singular) if base_prompts_expanded is empty or not provided
+        if not base_prompts or (len(base_prompts) == 1 and not base_prompts[0]):
+            base_prompt_singular = effective_params.get("base_prompt", "")
+            if base_prompt_singular:
+                base_prompts = [base_prompt_singular]
+                logger.info(f"Using base_prompt fallback: '{base_prompt_singular}'")
         
         # If we have more than 2 images, generate pairwise transitions and join
         if len(input_images) > 2:
@@ -528,9 +680,248 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         logger.info(f"Processed {task_type} task via Wavespeed API")
         return result
         
+    elif task_type == "image_inpaint":
+        # Wavespeed AI Qwen Image Inpainting with LoRA
+        logger.info(f"Processing {task_type} task via Wavespeed API")
+        
+        # Extract parameters
+        image_url = params.get("image_url") or params.get("image", "")
+        mask_url = params.get("mask_url", "")
+        prompt = params.get("prompt", "")
+        
+        if not image_url:
+            raise Exception("image_url parameter is required for image_inpaint task")
+        if not mask_url:
+            raise Exception("mask_url parameter is required for image_inpaint task")
+        
+        logger.info(f"Inpainting image: {image_url}")
+        logger.info(f"Using mask: {mask_url}")
+        logger.info(f"Prompt: {prompt}")
+        
+        # Create masked composite image
+        composite_url = await create_masked_composite_image(
+            client, task_id, image_url, mask_url, filename_prefix="inpaint_composite"
+        )
+        
+        # Generate random seed if not provided
+        seed = params.get("seed")
+        if seed is None or seed == -1:
+            seed = random.randint(0, 2**31 - 1)
+            logger.info(f"Generated random seed: {seed}")
+        
+        # Map parameters to Wavespeed API format
+        endpoint_path = "wavespeed-ai/qwen-image/edit-lora"
+        wavespeed_params = {
+            "enable_base64_output": params.get("enable_base64_output", False),
+            "enable_sync_mode": params.get("enable_sync_mode", False),
+            "output_format": params.get("output_format", "jpeg"),
+            "prompt": prompt,
+            "seed": seed,
+            "image": composite_url,  # Use the composite image with green mask
+            "loras": [
+                {
+                    "path": "https://huggingface.co/ostris/qwen_image_edit_inpainting/resolve/main/qwen_image_edit_inpainting.safetensors",
+                    "scale": 1.0
+                }
+            ]
+        }
+        
+        # Add any additional LoRAs from params
+        additional_loras = params.get("loras", [])
+        if additional_loras:
+            for lora in additional_loras:
+                if isinstance(lora, dict):
+                    # Support both "url"/"strength" and "path"/"scale" formats
+                    lora_url = lora.get("url") or lora.get("path", "")
+                    lora_strength = lora.get("strength", lora.get("scale", 1.0))
+                    
+                    if lora_url:
+                        wavespeed_params["loras"].append({
+                            "path": lora_url,
+                            "scale": float(lora_strength)
+                        })
+                        logger.info(f"Added additional inpaint LoRA: {lora_url} with strength {lora_strength}")
+            logger.info(f"Added {len(additional_loras)} additional LoRAs to inpaint request")
+        
+        # Add size parameter if resolution is provided
+        resolution = params.get("resolution", "")
+        if resolution:
+            normalized_size = normalize_resolution(resolution)
+            if normalized_size:
+                wavespeed_params["size"] = normalized_size
+                logger.info(f"Using resolution/size: {normalized_size}")
+        
+        logger.info(f"Calling inpainting API with composite image and LoRA")
+        
+        result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
+        
+        # Process external URL with automatic screenshot extraction for videos
+        result = await process_external_url_result(client, task_id, result)
+        
+        logger.info(f"Processed {task_type} task via Wavespeed API")
+        return result
+        
+    elif task_type == "annotated_image_edit":
+        # Wavespeed AI Qwen Image Editing with Scene Annotation LoRAs
+        logger.info(f"Processing {task_type} task via Wavespeed API")
+        
+        # Extract parameters
+        image_url = params.get("image_url") or params.get("image", "")
+        mask_url = params.get("mask_url", "")
+        prompt = params.get("prompt", "")
+        
+        if not image_url:
+            raise Exception("image_url parameter is required for annotated_image_edit task")
+        if not mask_url:
+            raise Exception("mask_url parameter is required for annotated_image_edit task")
+        
+        logger.info(f"Annotated image editing: {image_url}")
+        logger.info(f"Using mask: {mask_url}")
+        logger.info(f"Prompt: {prompt}")
+        
+        # Create masked composite image
+        composite_url = await create_masked_composite_image(
+            client, task_id, image_url, mask_url, filename_prefix="annotated_edit_composite"
+        )
+        
+        # Generate random seed if not provided
+        seed = params.get("seed")
+        if seed is None or seed == -1:
+            seed = random.randint(0, 2**31 - 1)
+            logger.info(f"Generated random seed: {seed}")
+        
+        # Map parameters to Wavespeed API format with annotation LoRAs
+        endpoint_path = "wavespeed-ai/qwen-image/edit-lora"
+        wavespeed_params = {
+            "enable_base64_output": params.get("enable_base64_output", False),
+            "enable_sync_mode": params.get("enable_sync_mode", False),
+            "output_format": params.get("output_format", "jpeg"),
+            "prompt": prompt,
+            "seed": seed,
+            "image": composite_url,  # Use the composite image with green mask
+            "loras": [
+                # Previous annotation LoRAs (commented out):
+                # {
+                #     "path": "https://huggingface.co/peteromallet/ad_motion_loras/resolve/main/in_scene_arrows_000001500.safetensors",
+                #     "scale": 1.0
+                # },
+                # {
+                #     "path": "https://huggingface.co/peteromallet/ad_motion_loras/resolve/main/in_scene_different_perspective_000019000.safetensors",
+                #     "scale": 1.0
+                # },
+                {
+                    "path": "https://huggingface.co/peteromallet/random_junk/resolve/main/in_scene_pure_squares_flipped_450_lr_000006700.safetensors",
+                    "scale": 1.0
+                }
+            ]
+        }
+        
+        # Add any additional LoRAs from params
+        additional_loras = params.get("loras", [])
+        if additional_loras:
+            for lora in additional_loras:
+                if isinstance(lora, dict):
+                    # Support both "url"/"strength" and "path"/"scale" formats
+                    lora_url = lora.get("url") or lora.get("path", "")
+                    lora_strength = lora.get("strength", lora.get("scale", 1.0))
+                    
+                    if lora_url:
+                        wavespeed_params["loras"].append({
+                            "path": lora_url,
+                            "scale": float(lora_strength)
+                        })
+                        logger.info(f"Added additional annotated edit LoRA: {lora_url} with strength {lora_strength}")
+            logger.info(f"Added {len(additional_loras)} additional LoRAs to annotated edit request")
+        
+        # Add size parameter if resolution is provided
+        resolution = params.get("resolution", "")
+        if resolution:
+            normalized_size = normalize_resolution(resolution)
+            if normalized_size:
+                wavespeed_params["size"] = normalized_size
+                logger.info(f"Using resolution/size: {normalized_size}")
+        
+        logger.info(f"Calling annotated edit API with composite image and scene annotation LoRAs")
+        
+        result = await call_wavespeed_api(endpoint_path, wavespeed_params, client)
+        
+        # Process external URL with automatic screenshot extraction for videos
+        result = await process_external_url_result(client, task_id, result)
+        
+        logger.info(f"Processed {task_type} task via Wavespeed API")
+        return result
+        
+    elif task_type == "image-upscale":
+        # fal.ai Image Upscale
+        logger.info(f"Processing {task_type} task via fal.ai API")
+        
+        # Extract parameters - support both "image_url" and "image" parameter names
+        image_url = params.get("image_url") or params.get("image", "")
+        # Support both "upscale_factor" and "scale_factor" parameter names
+        upscale_factor = params.get("upscale_factor") or params.get("scale_factor", 2)
+        
+        if not image_url:
+            logger.error(f"Missing image parameter. Available params: {list(params.keys())}")
+            raise Exception("image_url or image parameter is required for image-upscale task")
+        
+        logger.info(f"Upscaling image: {image_url} with factor: {upscale_factor}")
+        
+        # Call fal.ai API (run in thread pool since it's a blocking call)
+        try:
+            def on_queue_update(update):
+                if isinstance(update, fal_client.InProgress):
+                    for log in update.logs:
+                        logger.info(f"fal.ai: {log['message']}")
+            
+            # Run the blocking fal_client.subscribe in a thread pool
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: fal_client.subscribe(
+                    "fal-ai/seedvr/upscale/image",
+                    arguments={
+                        "image_url": image_url,
+                        "upscale_factor": upscale_factor
+                    },
+                    with_logs=True,
+                    on_queue_update=on_queue_update,
+                )
+            )
+            
+            logger.info(f"fal.ai upscale result: {result}")
+            
+            # Transform fal.ai result format to expected format
+            # fal.ai returns: {'image': {'url': '...', 'width': ..., 'height': ...}, 'seed': ...}
+            # We need: {'output_url': '...'}
+            if isinstance(result, dict) and 'image' in result:
+                image_data = result['image']
+                if isinstance(image_data, dict) and 'url' in image_data:
+                    transformed_result = {
+                        'output_url': image_data['url'],
+                        'width': image_data.get('width'),
+                        'height': image_data.get('height'),
+                        'seed': result.get('seed'),
+                        'content_type': image_data.get('content_type')
+                    }
+                    logger.info(f"Transformed fal.ai result to standard format: {transformed_result['output_url']}")
+                    
+                    # Process external URL with automatic download and upload to Supabase
+                    transformed_result = await process_external_url_result(client, task_id, transformed_result)
+                    
+                    logger.info(f"Processed {task_type} task via fal.ai API")
+                    return transformed_result
+            
+            # Fallback if format is unexpected
+            logger.warning(f"Unexpected fal.ai result format, returning as-is: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"fal.ai API call failed: {e}")
+            raise Exception(f"fal.ai upscale failed: {str(e)}")
+        
     else:
         # Unsupported task type
-        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v', 'animate_character'.")
+        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v', 'animate_character', 'image-upscale', 'image_inpaint', 'annotated_image_edit'.")
 
 
 async def worker_loop(index: int, worker_id: str, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> None:
@@ -548,6 +939,7 @@ def validate_api_environment():
         'SUPABASE_URL': 'Supabase database URL for task management',
         'SUPABASE_SERVICE_ROLE_KEY': 'Supabase service role key for database access',
         'WAVESPEED_API_KEY': 'Wavespeed API key for processing tasks',
+        'FAL_KEY': 'fal.ai API key for image upscaling tasks',
     }
     
     # Optional but important environment variables
