@@ -307,7 +307,15 @@ class Formatter:
                 lines.append(f"   VRAM: {vram_used}/{vram_total} MB ({vram_percent:.1f}%)")
                 vram_ts = diagnostics.get('vram_timestamp', '')
                 if vram_ts:
-                    lines.append(f"   VRAM Timestamp: {vram_ts[:19]}")
+                    # vram_timestamp may be an ISO string or a unix epoch (float/int)
+                    if isinstance(vram_ts, (int, float)):
+                        try:
+                            vram_dt = datetime.fromtimestamp(float(vram_ts), tz=timezone.utc)
+                            lines.append(f"   VRAM Timestamp: {vram_dt.isoformat(timespec='seconds')}")
+                        except Exception:
+                            lines.append(f"   VRAM Timestamp: {vram_ts}")
+                    else:
+                        lines.append(f"   VRAM Timestamp: {str(vram_ts)[:19]}")
             
             # Running tasks at failure
             running_tasks = diagnostics.get('running_tasks', [])

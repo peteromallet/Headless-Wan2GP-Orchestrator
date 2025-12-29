@@ -13,6 +13,8 @@ Usage:
     debug.py workers                    # List recent workers
     debug.py health                     # System health check
     debug.py orchestrator               # Orchestrator status
+    debug.py railway                    # Railway deployment status
+    debug.py infra                      # Infrastructure analysis (RAM tiers, failure rates)
 
 Options:
     --json                              # Output as JSON
@@ -47,7 +49,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from scripts.debug.client import DebugClient
-from scripts.debug.commands import task, worker, tasks, workers, health, orchestrator, config, runpod
+from scripts.debug.commands import task, worker, tasks, workers, health, orchestrator, config, runpod, storage, railway, infra
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -75,6 +77,7 @@ def create_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument('--logs-only', action='store_true', help='Show only logs timeline')
     worker_parser.add_argument('--startup', action='store_true', help='Show startup logs only')
     worker_parser.add_argument('--check-logging', action='store_true', help='Check if worker is logging')
+    worker_parser.add_argument('--check-disk', action='store_true', help='Check disk space via SSH')
     worker_parser.add_argument('--debug', action='store_true', help='Show debug info on errors')
     
     # Tasks command
@@ -113,6 +116,24 @@ def create_parser() -> argparse.ArgumentParser:
     runpod_parser = subparsers.add_parser('runpod', help='Check RunPod sync status')
     runpod_parser.add_argument('--terminate', action='store_true', help='Terminate orphaned pods')
     runpod_parser.add_argument('--debug', action='store_true', help='Show debug info on errors')
+    
+    # Storage command
+    storage_parser = subparsers.add_parser('storage', help='Check storage volume health')
+    storage_parser.add_argument('--expand', type=str, help='Expand specified storage volume')
+    storage_parser.add_argument('--debug', action='store_true', help='Show debug info on errors')
+    
+    # Railway command
+    railway_parser = subparsers.add_parser('railway', help='Railway deployment status and logs')
+    railway_parser.add_argument('--service', type=str, default='gpu-orchestrator', help='Service name (default: gpu-orchestrator)')
+    railway_parser.add_argument('--build', action='store_true', help='Show build logs')
+    railway_parser.add_argument('--deploy', action='store_true', help='Show deploy/runtime logs')
+    railway_parser.add_argument('--lines', type=int, default=30, help='Number of log lines (default: 30)')
+    railway_parser.add_argument('--debug', action='store_true', help='Show debug info on errors')
+    
+    # Infra command
+    infra_parser = subparsers.add_parser('infra', help='Infrastructure analysis (RAM tier stats, failure rates)')
+    infra_parser.add_argument('--days', type=int, default=3, help='Days of history to analyze (default: 3)')
+    infra_parser.add_argument('--debug', action='store_true', help='Show debug info on errors')
     
     return parser
 
@@ -157,10 +178,22 @@ def main():
         options['startup'] = args.startup
     if hasattr(args, 'check_logging'):
         options['check_logging'] = args.check_logging
+    if hasattr(args, 'check_disk'):
+        options['check_disk'] = args.check_disk
     if hasattr(args, 'explain'):
         options['explain'] = args.explain
     if hasattr(args, 'terminate'):
         options['terminate'] = args.terminate
+    if hasattr(args, 'expand'):
+        options['expand'] = args.expand
+    if hasattr(args, 'service'):
+        options['service'] = args.service
+    if hasattr(args, 'build'):
+        options['build'] = args.build
+    if hasattr(args, 'deploy'):
+        options['deploy'] = args.deploy
+    if hasattr(args, 'days'):
+        options['days'] = args.days
     
     # Route to appropriate command handler
     try:
@@ -180,6 +213,12 @@ def main():
             config.run(client, options)
         elif args.command == 'runpod':
             runpod.run(client, options)
+        elif args.command == 'storage':
+            storage.run(client, options)
+        elif args.command == 'railway':
+            railway.run(client, options)
+        elif args.command == 'infra':
+            infra.run(client, options)
         else:
             parser.print_help()
             sys.exit(1)

@@ -144,7 +144,7 @@ def remove_last_frame_from_video(video_path: str, output_path: str) -> bool:
             '-of', 'csv=p=0', video_path
         ]
         
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True, timeout=60)
         total_frames = int(result.stdout.strip())
         
         if total_frames <= 1:
@@ -158,10 +158,13 @@ def remove_last_frame_from_video(video_path: str, output_path: str) -> bool:
             '-vsync', 'vfr', '-y', output_path
         ]
         
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=300)
         logger.info(f"Successfully removed last frame from {video_path}, saved to {output_path}")
         return True
         
+    except subprocess.TimeoutExpired:
+        logger.error(f"FFmpeg timed out removing last frame from {video_path}")
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f"FFmpeg error removing last frame: {e.stderr}")
         return False
@@ -208,10 +211,13 @@ def join_videos(video_paths: List[str], output_path: str) -> bool:
             '-y', output_path
         ])
         
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=300)
         logger.info(f"Successfully joined {len(video_paths)} videos to {output_path}")
         return True
         
+    except subprocess.TimeoutExpired:
+        logger.error(f"FFmpeg timed out joining {len(video_paths)} videos")
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f"FFmpeg error joining videos: {e.stderr}")
         return False

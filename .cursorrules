@@ -36,3 +36,4 @@ See `structure_docs/debugging.md` for full documentation.
 - `scripts/` - Debugging and management utilities
 - `sql/` - Database migrations
 
+

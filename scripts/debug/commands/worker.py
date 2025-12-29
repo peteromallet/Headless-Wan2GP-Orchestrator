@@ -10,6 +10,32 @@ def run(client: DebugClient, worker_id: str, options: dict):
         hours = options.get('hours', 24)
         startup = options.get('startup', False)
         check_logging = options.get('check_logging', False)
+        check_disk = options.get('check_disk', False)
+        
+        # Check disk space via SSH
+        if check_disk:
+            result = client.check_worker_disk_space(worker_id)
+            print("=" * 80)
+            print(f"💾 DISK SPACE CHECK: {worker_id}")
+            print("=" * 80)
+            
+            if result.get('available'):
+                print(f"\n✅ SSH successful (RunPod: {result.get('runpod_id')})\n")
+                print(result.get('disk_info', 'No output'))
+                
+                issues = result.get('issues', [])
+                if issues:
+                    print("\n" + "=" * 40)
+                    print("⚠️  ISSUES DETECTED:")
+                    for issue in issues:
+                        print(f"   {issue}")
+                else:
+                    print("\n✅ No disk space issues detected")
+            else:
+                print(f"\n❌ Cannot check disk space: {result.get('error')}")
+                print("\n💡 Worker may be terminated or SSH unavailable")
+            print()
+            return
         
         # Check if worker is logging
         if check_logging:

@@ -61,7 +61,8 @@ class DatabaseClient:
                 "include_active": include_active
             }
             
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(task_counts_url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -107,7 +108,8 @@ class DatabaseClient:
                 "run_type": "gpu"
             }
             
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(task_counts_url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -462,4 +464,69 @@ class DatabaseClient:
             
         except Exception as e:
             logger.error(f"Failed to reset API worker orphaned tasks: {e}")
+            return 0
+    
+    async def reset_stale_assigned_tasks(self, timeout_minutes: int = 30) -> int:
+        """Reset tasks stuck in 'In Progress' that haven't been updated recently.
+        
+        This is a safety net that catches tasks where:
+        - The worker is alive and heartbeating
+        - But the task processing itself is stuck (deadlock, infinite loop, etc.)
+        - And updated_at isn't being refreshed
+        
+        Uses updated_at (last activity) rather than generation_started_at (task start time)
+        to catch tasks that made some progress but then stalled.
+        """
+        try:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+            
+            # Find tasks that are:
+            # - In Progress with a worker assigned (not api-worker-*, those are handled separately)
+            # - Haven't been updated in timeout_minutes
+            # - Have attempts < 3 (allow retry)
+            result = self.supabase.table('tasks').select('id, task_type, worker_id') \
+                .eq('status', 'In Progress') \
+                .not_.is_('worker_id', 'null') \
+                .not_.like('worker_id', 'api-worker-%') \
+                .lt('updated_at', cutoff_time.isoformat()) \
+                .lt('attempts', 3) \
+                .execute()
+            
+            if not result.data:
+                return 0
+            
+            # Filter out orchestrator tasks - they can run for extended periods
+            non_orchestrator_tasks = [
+                task for task in result.data 
+                if '_orchestrator' not in task.get('task_type', '').lower()
+            ]
+            
+            if not non_orchestrator_tasks:
+                logger.debug(f"Found {len(result.data)} stale tasks, but all are orchestrator tasks - skipping reset")
+                return 0
+            
+            task_ids = [task['id'] for task in non_orchestrator_tasks]
+            
+            # Reset these tasks back to Queued status
+            reset_result = self.supabase.table('tasks').update({
+                'status': 'Queued',
+                'worker_id': None,
+                'generation_started_at': None,
+                'generation_processed_at': None,
+                'error_message': f'Reset - no activity for {timeout_minutes} minutes (stale task)'
+            }).in_('id', task_ids).execute()
+            
+            count = len(reset_result.data) if reset_result.data else 0
+            
+            if count > 0:
+                logger.warning(f"Reset {count} stale assigned tasks with no activity for >{timeout_minutes}m")
+                if count <= 5:
+                    logger.warning(f"Reset stale task IDs: {task_ids}")
+                else:
+                    logger.warning(f"Reset {count} stale tasks (IDs truncated)")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to reset stale assigned tasks: {e}")
             return 0

@@ -308,8 +308,24 @@ class SSHClient:
     def execute_command(self, command: str, timeout: int = 600):
         if not self.client:
             raise RuntimeError("SSH client not connected. Call connect() first.")
+        
+        import time
+        
         stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        exit_status = stdout.channel.recv_exit_status()
+        channel = stdout.channel
+        
+        # Wait for command to finish with actual timeout
+        # recv_exit_status() blocks forever, so we poll with timeout instead
+        start_time = time.time()
+        while not channel.exit_status_ready():
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                # Command timed out - close the channel and return error
+                channel.close()
+                return -1, "", f"Command timed out after {timeout} seconds"
+            time.sleep(0.1)
+        
+        exit_status = channel.recv_exit_status()
         out = stdout.read().decode()
         err = stderr.read().decode()
         return exit_status, out, err
@@ -348,9 +364,10 @@ class RunpodClient:
         
         # RAM tier fallback strategy: Try to get highest RAM instances, fall back if unavailable
         # Based on testing: 72GB is max available, then 60GB, 48GB, 32GB are common tiers
+        # Strategy: Try each RAM tier across ALL storages before falling back to next tier
+        # This prioritizes 72GB (lowest failure rate) over 60GB (higher failure rate)
         self.ram_tiers_enabled = os.getenv("RUNPOD_RAM_TIER_FALLBACK", "true").lower() == "true"
-        self.high_ram_tiers = [72, 60]  # Try high RAM (60+ GB) first across all storages
-        self.low_ram_tiers = [48, 32, 16]  # Fallback to lower RAM if high RAM unavailable
+        self.ram_tiers = [72, 60, 48, 32, 16]  # Ordered by preference (72GB has lowest failure rate)
         
         # SSH configuration for worker access (both keys like user's example)
         self.ssh_public_key_path = os.getenv("RUNPOD_SSH_PUBLIC_KEY_PATH")
@@ -443,6 +460,150 @@ class RunpodClient:
         except Exception as e:
             logger.warning(f"⚠️  Error checking storage space: {e}, continuing anyway...")
             return True  # Don't block worker spawn on storage check failure
+    
+    def check_storage_health(
+        self, 
+        storage_name: str, 
+        volume_id: str, 
+        active_runpod_id: str,
+        min_free_gb: int = 50,
+        max_percent_used: int = 85
+    ) -> Dict[str, Any]:
+        """
+        Check storage health by SSHing to a worker and checking actual disk usage.
+        
+        Args:
+            storage_name: Name of the storage volume
+            volume_id: Network volume ID  
+            active_runpod_id: RunPod ID of an active worker to SSH to
+            min_free_gb: Minimum free space required in GB
+            max_percent_used: Maximum usage percentage before flagging
+            
+        Returns:
+            Dict with health info:
+                - healthy: bool
+                - needs_expansion: bool
+                - total_gb: int
+                - used_gb: int
+                - free_gb: int
+                - percent_used: int
+                - message: str
+                - raw_df: str (raw df output)
+        """
+        try:
+            logger.info(f"📦 STORAGE_HEALTH Checking '{storage_name}' via pod {active_runpod_id}")
+            
+            # Get volume info from RunPod API for total size
+            volumes = get_network_volumes(self.api_key)
+            volume_info = next((v for v in volumes if v.get('id') == volume_id), None)
+            
+            api_total_gb = None
+            if volume_info:
+                api_total_gb = volume_info.get('size', 0)
+                logger.info(f"📦 STORAGE_HEALTH API reports '{storage_name}': {api_total_gb} GB total")
+            
+            # SSH to worker to check actual disk usage
+            check_command = """
+            echo "=== WORKSPACE STORAGE ==="
+            df -h /workspace 2>/dev/null | tail -1
+            echo ""
+            echo "=== WORKSPACE USAGE DETAILS ==="
+            df -BG /workspace 2>/dev/null | tail -1
+            echo ""
+            echo "=== LARGEST DIRECTORIES ==="
+            du -sh /workspace/*/ 2>/dev/null | sort -rh | head -10
+            """
+            
+            result = self.execute_command_on_worker(active_runpod_id, check_command, timeout=30)
+            
+            if not result or result[0] != 0:
+                logger.error(f"📦 STORAGE_HEALTH SSH failed for '{storage_name}': {result}")
+                return {
+                    'healthy': False,
+                    'needs_expansion': False,
+                    'message': f'SSH check failed: {result}',
+                    'error': True
+                }
+            
+            raw_output = result[1] or ''
+            logger.info(f"📦 STORAGE_HEALTH Raw output for '{storage_name}':\n{raw_output}")
+            
+            # Parse df output to get actual usage
+            # Format: "mfs#... 671T 507T 165T 76% /workspace"
+            total_gb = 0
+            used_gb = 0
+            free_gb = 0
+            percent_used = 0
+            
+            for line in raw_output.split('\n'):
+                if '/workspace' in line and not line.startswith('==='):
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        # Try to parse the size values
+                        try:
+                            # Handle different units (G, T, etc.)
+                            def parse_size(s):
+                                s = s.strip()
+                                if s.endswith('T'):
+                                    return int(float(s[:-1]) * 1024)
+                                elif s.endswith('G'):
+                                    return int(float(s[:-1]))
+                                elif s.endswith('M'):
+                                    return int(float(s[:-1]) / 1024)
+                                elif s.endswith('K'):
+                                    return 0
+                                else:
+                                    return int(s)
+                            
+                            # df -BG output: "Size Used Avail Use% Mounted"
+                            if 'G' in parts[1] or 'T' in parts[1]:
+                                total_gb = parse_size(parts[1])
+                                used_gb = parse_size(parts[2])
+                                free_gb = parse_size(parts[3])
+                                percent_str = parts[4].rstrip('%')
+                                percent_used = int(percent_str) if percent_str.isdigit() else 0
+                                break
+                        except (ValueError, IndexError) as e:
+                            logger.warning(f"📦 STORAGE_HEALTH Could not parse df output: {e}")
+            
+            # Determine health status
+            healthy = True
+            needs_expansion = False
+            message = f"OK: {free_gb}GB free ({100-percent_used}% available)"
+            
+            if percent_used >= max_percent_used:
+                healthy = False
+                needs_expansion = True
+                message = f"CRITICAL: {percent_used}% used, only {free_gb}GB free!"
+                logger.error(f"📦 STORAGE_HEALTH ❌ '{storage_name}' {message}")
+            elif free_gb < min_free_gb:
+                healthy = False
+                needs_expansion = True
+                message = f"LOW SPACE: Only {free_gb}GB free (need {min_free_gb}GB)"
+                logger.warning(f"📦 STORAGE_HEALTH ⚠️  '{storage_name}' {message}")
+            else:
+                logger.info(f"📦 STORAGE_HEALTH ✅ '{storage_name}' {message}")
+            
+            return {
+                'healthy': healthy,
+                'needs_expansion': needs_expansion,
+                'total_gb': total_gb,
+                'used_gb': used_gb,
+                'free_gb': free_gb,
+                'percent_used': percent_used,
+                'message': message,
+                'raw_df': raw_output,
+                'api_total_gb': api_total_gb
+            }
+            
+        except Exception as e:
+            logger.error(f"📦 STORAGE_HEALTH Error checking '{storage_name}': {e}")
+            return {
+                'healthy': False,
+                'needs_expansion': False,
+                'message': f'Error: {e}',
+                'error': True
+            }
     
     def _get_storage_volume_id(self, storage_name: Optional[str] = None) -> Optional[str]:
         """Get storage volume ID by name, optionally cached."""
@@ -562,35 +723,39 @@ class RunpodClient:
             logger.error(f"[SSH_DEBUG] No SSH public key available for worker {worker_id} - authentication will fail!")
         
         # Determine RAM tier strategy
+        # New strategy: Try each RAM tier across ALL storages before falling back to next tier
+        # This prioritizes 72GB machines (2.3% failure rate) over 60GB (16.7% failure rate)
         if self.ram_tiers_enabled:
-            # Filter high/low RAM tiers based on configured minimum
-            high_ram_tiers = [tier for tier in self.high_ram_tiers if tier >= self.min_memory_gb]
-            low_ram_tiers = [tier for tier in self.low_ram_tiers if tier >= self.min_memory_gb]
+            # Filter RAM tiers based on configured minimum
+            ram_tiers = [tier for tier in self.ram_tiers if tier >= self.min_memory_gb]
             
-            # If min is very high, might have no low tiers
-            if not low_ram_tiers and not high_ram_tiers:
-                low_ram_tiers = [self.min_memory_gb]
+            if not ram_tiers:
+                ram_tiers = [self.min_memory_gb]
             
-            logger.info(f"🎯 Storage + RAM tier fallback enabled")
-            logger.info(f"   Phase 1 (High RAM): Try {high_ram_tiers} GB across storages: {self.storage_volumes}")
-            logger.info(f"   Phase 2 (Low RAM): Try {low_ram_tiers} GB across storages if Phase 1 fails")
+            logger.info(f"🎯 RAM tier fallback enabled (tries each tier across all storages)")
+            logger.info(f"   RAM tiers (in order): {ram_tiers} GB")
+            logger.info(f"   Storage volumes: {self.storage_volumes}")
         else:
             # Simple mode: just try configured minimum
-            high_ram_tiers = [self.min_memory_gb]
-            low_ram_tiers = []
+            ram_tiers = [self.min_memory_gb]
         
-        # Phase 1: Try HIGH RAM across all storage volumes
+        # Try each RAM tier across ALL storage volumes before moving to next tier
+        # This ensures we get 72GB machines whenever possible (lowest failure rate)
         last_error = None
-        for storage_name in self.storage_volumes:
-            storage_volume_id = self._get_storage_volume_id(storage_name)
-            if not storage_volume_id:
-                logger.warning(f"⚠️  Storage '{storage_name}' not found, skipping...")
-                continue
+        for ram_tier in ram_tiers:
+            logger.info(f"🔍 Trying {ram_tier}GB RAM across all storage volumes...")
             
-            # Check and expand storage if needed (adds +50GB if total < 100GB)
-            self._check_and_expand_storage(storage_name, storage_volume_id, min_free_gb=50)
-            
-            for ram_tier in high_ram_tiers:
+            for storage_name in self.storage_volumes:
+                storage_volume_id = self._get_storage_volume_id(storage_name)
+                if not storage_volume_id:
+                    logger.warning(f"⚠️  Storage '{storage_name}' not found, skipping...")
+                    continue
+                
+                # Check and expand storage if needed (adds +50GB if total < 100GB)
+                # Only do this once per storage (on first RAM tier attempt)
+                if ram_tier == ram_tiers[0]:
+                    self._check_and_expand_storage(storage_name, storage_volume_id, min_free_gb=50)
+                
                 try:
                     logger.info(f"🚀 Creating worker: {worker_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
                     
@@ -636,64 +801,15 @@ class RunpodClient:
                         logger.warning(f"⚠️  Storage: {storage_name}, RAM: {ram_tier} GB - {error_msg}")
                         last_error = error_msg
                     continue
-        
-        # Phase 2: If high RAM failed everywhere, try LOW RAM across all storage volumes
-        if low_ram_tiers:
-            logger.warning(f"⚠️  Phase 1 failed (high RAM not available). Trying Phase 2 (lower RAM tiers)...")
             
-            for storage_name in self.storage_volumes:
-                storage_volume_id = self._get_storage_volume_id(storage_name)
-                if not storage_volume_id:
-                    continue
-                
-                for ram_tier in low_ram_tiers:
-                    try:
-                        logger.info(f"🚀 Creating worker: {worker_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
-                        
-                        pod_details = create_pod_and_wait(
-                            api_key=self.api_key,
-                            gpu_type_id=gpu_info["id"],
-                            image_name=self.worker_image,
-                            name=worker_id,
-                            network_volume_id=storage_volume_id,
-                            volume_mount_path=self.volume_mount_path,
-                            disk_in_gb=self.disk_size_gb,
-                            container_disk_in_gb=self.container_disk_gb,
-                            min_vcpu_count=self.min_vcpu_count,
-                            min_memory_in_gb=ram_tier,
-                            public_key_string=public_key_content,
-                            env_vars=env_vars,
-                        )
-                        
-                        if pod_details and 'id' in pod_details:
-                            pod_id = pod_details['id']
-                            logger.info(f"✅ SUCCESS: {worker_id} -> {pod_id} (Storage: {storage_name}, RAM: {ram_tier} GB)")
-                            
-                            return {
-                                "worker_id": worker_id,
-                                "runpod_id": pod_id,
-                                "gpu_type": gpu_info["displayName"],
-                                "status": "spawning",
-                                "created_at": time.time(),
-                                "pod_details": pod_details,
-                                "ram_tier": ram_tier,
-                                "storage_volume": storage_name,
-                            }
-                        else:
-                            last_error = "Pod creation returned no ID"
-                            
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "no longer any instances available" in error_msg.lower():
-                            last_error = f"No instances available"
-                        else:
-                            last_error = error_msg
-                        continue
+            # If we get here, this RAM tier failed across all storages - try next tier
+            if ram_tier != ram_tiers[-1]:
+                logger.warning(f"⚠️  {ram_tier}GB RAM not available in any storage, trying {ram_tiers[ram_tiers.index(ram_tier)+1]}GB...")
         
         # All attempts failed
         logger.error(f"❌ Failed to create pod for worker {worker_id}")
         logger.error(f"   Tried storages: {self.storage_volumes}")
-        logger.error(f"   Tried RAM tiers: {high_ram_tiers + low_ram_tiers}")
+        logger.error(f"   Tried RAM tiers: {ram_tiers}")
         logger.error(f"   Last error: {last_error}")
         return None
     
@@ -1080,22 +1196,43 @@ echo "=========================================" >> $LOG_FILE 2>&1
                         'logs': None
                     }
             else:
-                # Worker not logging yet - check for errors in startup log
+                # Worker not logging yet - check for errors in startup log AND disk space
                 check_command = f"""
+                echo "=== DISK SPACE ==="
+                df -h / /tmp /var 2>/dev/null | head -10
+                echo ""
                 if [ -f /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log ]; then
-                    echo "=== CHECKING FOR ERRORS ==="
-                    tail -50 /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log | grep -i "error\\|fail\\|exception" || echo "No errors found in recent logs"
+                    echo "=== STARTUP LOG ERRORS ==="
+                    tail -50 /workspace/Headless-Wan2GP/logs/{worker_id}_startup.log | grep -i "error\\|fail\\|exception\\|no space" || echo "No errors found in recent logs"
+                else
+                    echo "=== STARTUP LOG ==="
+                    echo "No startup log file yet"
                 fi
                 """
                 
                 result = self.execute_command_on_worker(runpod_id, check_command, timeout=10)
-                if result and result[1] and 'error' in result[1].lower():
-                    logger.warning(f"⚠️ Potential errors in {worker_id} startup:\n{result[1]}")
-                    return {
-                        'status': 'initializing',
-                        'message': 'Worker still initializing, potential errors detected',
-                        'logs': result[1]
-                    }
+                if result and result[1]:
+                    output = result[1]
+                    
+                    # Check for disk space issues
+                    if '100%' in output or 'No space left' in output.lower():
+                        logger.error(f"❌ DISK SPACE ISSUE on {worker_id}:\n{output}")
+                        return {
+                            'status': 'initializing',
+                            'message': 'Disk space critically low!',
+                            'logs': output
+                        }
+                    
+                    # Log disk space info for debugging
+                    logger.info(f"📊 Worker {worker_id} system status:\n{output}")
+                    
+                    if 'error' in output.lower() or 'fail' in output.lower():
+                        logger.warning(f"⚠️ Potential errors in {worker_id} startup:\n{output}")
+                        return {
+                            'status': 'initializing',
+                            'message': 'Worker still initializing, potential errors detected',
+                            'logs': output
+                        }
                 
                 return {
                     'status': 'initializing',

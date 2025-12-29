@@ -206,6 +206,81 @@ class DebugClient:
             'recent_logs': logs[:5] if logs else []
         }
     
+    def check_worker_disk_space(self, worker_id: str) -> Dict[str, Any]:
+        """Check disk space on a live worker via SSH.
+        
+        Returns dict with:
+            - available: bool (was SSH successful)
+            - disk_info: str (raw df output)
+            - issues: list of detected issues
+        """
+        # Get worker to find runpod_id
+        result = self.db.supabase.table('workers').select('*').eq('id', worker_id).execute()
+        if not result.data:
+            return {'available': False, 'error': 'Worker not found'}
+        
+        worker = result.data[0]
+        if worker['status'] in ['terminated', 'error']:
+            return {'available': False, 'error': f"Worker is {worker['status']} - cannot SSH"}
+        
+        runpod_id = worker.get('metadata', {}).get('runpod_id')
+        if not runpod_id:
+            return {'available': False, 'error': 'No RunPod ID found'}
+        
+        try:
+            from gpu_orchestrator.runpod_client import create_runpod_client
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            client = create_runpod_client()
+            
+            # Check disk space on key filesystems
+            check_command = """
+            echo "=== DISK SPACE ==="
+            df -h / /tmp /var /workspace 2>/dev/null
+            echo ""
+            echo "=== LARGEST DIRS IN /tmp ==="
+            du -sh /tmp/* 2>/dev/null | sort -rh | head -5
+            echo ""
+            echo "=== APT CACHE SIZE ==="
+            du -sh /var/cache/apt 2>/dev/null || echo "N/A"
+            """
+            
+            result = client.execute_command_on_worker(runpod_id, check_command, timeout=15)
+            
+            if not result or result[0] != 0:
+                return {'available': False, 'error': 'SSH command failed'}
+            
+            output = result[1] or ''
+            
+            # Detect issues
+            issues = []
+            for line in output.split('\n'):
+                if '100%' in line or '99%' in line or '98%' in line:
+                    issues.append(f"CRITICAL: {line.strip()}")
+                elif '9' in line and '%' in line:
+                    # Check for 90%+
+                    try:
+                        parts = line.split()
+                        for part in parts:
+                            if part.endswith('%'):
+                                pct = int(part.rstrip('%'))
+                                if pct >= 90:
+                                    issues.append(f"WARNING: {line.strip()}")
+                                    break
+                    except:
+                        pass
+            
+            return {
+                'available': True,
+                'disk_info': output,
+                'issues': issues,
+                'runpod_id': runpod_id
+            }
+            
+        except Exception as e:
+            return {'available': False, 'error': str(e)}
+    
     # ==================== MULTI-TASK METHODS ====================
     
     def get_recent_tasks(

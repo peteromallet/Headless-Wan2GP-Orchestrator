@@ -550,6 +550,12 @@ class OrchestratorControlLoop:
             if api_reset_count > 0:
                 summary['actions']['tasks_reset'] += api_reset_count
             
+            # Check for stale assigned tasks (worker alive but task not updating)
+            # This catches tasks where the worker is heartbeating but task processing is stuck
+            stale_reset_count = await self.db.reset_stale_assigned_tasks(timeout_minutes=30)
+            if stale_reset_count > 0:
+                summary['actions']['tasks_reset'] += stale_reset_count
+            
             # 4. SCALE DOWN: Idle workers above minimum
             # Refresh active workers list after health checks
             active_workers = [w for w in workers if w['status'] == 'active' and w['id'] not in recent_failed_workers]
