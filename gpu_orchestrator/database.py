@@ -435,23 +435,34 @@ class DatabaseClient:
             # - Assigned to an api-worker-* (not a GPU worker)
             # - Have been stuck for longer than the timeout
             # - Have attempts < 3 (allow retry)
-            result = self.supabase.table('tasks').select('id, task_type, worker_id').eq('status', 'In Progress').like('worker_id', 'api-worker-%').lt('generation_started_at', cutoff_time.isoformat()).lt('attempts', 3).execute()
+            result = self.supabase.table('tasks').select('id, task_type, worker_id, attempts').eq('status', 'In Progress').like('worker_id', 'api-worker-%').lt('generation_started_at', cutoff_time.isoformat()).lt('attempts', 3).execute()
             
             if not result.data:
                 return 0
             
-            task_ids = [task['id'] for task in result.data]
-            
-            # Reset these tasks back to Queued status
-            reset_result = self.supabase.table('tasks').update({
-                'status': 'Queued',
-                'worker_id': None,
-                'generation_started_at': None,
-                'generation_processed_at': None,
-                'error_message': 'Reset - orphaned from API worker timeout'
-            }).in_('id', task_ids).execute()
-            
-            count = len(reset_result.data) if reset_result.data else 0
+            # Reset each task individually to properly increment attempts
+            count = 0
+            task_ids = []
+            for task in result.data:
+                task_id = task['id']
+                current_attempts = task.get('attempts', 0)
+                new_attempts = current_attempts + 1
+                
+                try:
+                    reset_result = self.supabase.table('tasks').update({
+                        'status': 'Queued',
+                        'worker_id': None,
+                        'generation_started_at': None,
+                        'generation_processed_at': None,
+                        'attempts': new_attempts,
+                        'error_message': f'Reset - orphaned from API worker timeout (attempt {new_attempts}/3)'
+                    }).eq('id', task_id).execute()
+                    
+                    if reset_result.data:
+                        count += 1
+                        task_ids.append(task_id)
+                except Exception as e:
+                    logger.error(f"Failed to reset orphaned task {task_id}: {e}")
             
             if count > 0:
                 logger.warning(f"Reset {count} orphaned API worker tasks stuck in progress for >{timeout_minutes}m")

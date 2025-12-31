@@ -546,7 +546,8 @@ class OrchestratorControlLoop:
                 summary['actions']['tasks_reset'] += unassigned_reset_count
             
             # Check for API worker orphaned tasks (api-worker-* not tracked in workers table)
-            api_reset_count = await self.db.reset_api_worker_orphaned_tasks(timeout_minutes=5)
+            # Use 7 minutes (> 5min Wavespeed max_wait_seconds) to avoid race condition
+            api_reset_count = await self.db.reset_api_worker_orphaned_tasks(timeout_minutes=7)
             if api_reset_count > 0:
                 summary['actions']['tasks_reset'] += api_reset_count
             
