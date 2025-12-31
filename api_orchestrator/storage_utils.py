@@ -329,9 +329,9 @@ async def download_and_upload_to_supabase(client: httpx.AsyncClient, task_id: st
         
     except Exception as e:
         logger.error(f"Failed to download and upload {external_url}: {e}")
-        # Return original URL as fallback
+        # Return original URL as fallback, but mark it as failed so caller knows
         logger.warning(f"Falling back to original URL: {external_url}")
-        return {"url": external_url}
+        return {"url": external_url, "upload_failed": True, "error": str(e)}
 
 
 async def process_external_url_result(client: httpx.AsyncClient, task_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -358,10 +358,15 @@ async def process_external_url_result(client: httpx.AsyncClient, task_id: str, r
         if "screenshot_url" in upload_result:
             result["screenshot_url"] = upload_result["screenshot_url"]
         
-        # Mark that task completion was handled by the upload
-        result["_task_completed_by_upload"] = True
-        
-        logger.info(f"Successfully processed external URL for task {task_id}")
+        # Check if upload actually failed (download_and_upload_to_supabase returns fallback on error)
+        if upload_result.get("upload_failed"):
+            logger.warning(f"Upload failed for task {task_id}, will need explicit mark_complete: {upload_result.get('error')}")
+            result["migration_error"] = upload_result.get("error")
+            # Do NOT set _task_completed_by_upload - let the caller handle completion
+        else:
+            # Mark that task completion was handled by the upload
+            result["_task_completed_by_upload"] = True
+            logger.info(f"Successfully processed external URL for task {task_id}")
         
     except Exception as e:
         logger.error(f"Failed to process external URL {external_url} for task {task_id}: {e}")
