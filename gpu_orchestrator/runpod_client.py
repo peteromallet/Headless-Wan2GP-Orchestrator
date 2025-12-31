@@ -707,7 +707,7 @@ class RunpodClient:
             "SUPABASE_ANON_KEY": os.getenv("SUPABASE_ANON_KEY", ""),
             "REPLICATE_API_TOKEN": os.getenv("REPLICATE_API_TOKEN", ""),
             # Pass the correct edge function URLs to GPU workers
-            "SUPABASE_EDGE_COMPLETE_TASK_URL": f"{supabase_url}/functions/v1/complete-task" if supabase_url else "",
+            "SUPABASE_EDGE_COMPLETE_TASK_URL": f"{supabase_url}/functions/v1/complete_task" if supabase_url else "",
             "SUPABASE_EDGE_MARK_FAILED_URL": f"{supabase_url}/functions/v1/mark-task-failed" if supabase_url else "",
         }
         
