@@ -38,6 +38,120 @@ PARENT_POLL_SEC = int(os.getenv("API_PARENT_POLL_SEC", "10"))
 logger = logging.getLogger(__name__)
 
 
+async def call_fal_api(
+    endpoint: str,
+    arguments: Dict[str, Any],
+    client: httpx.AsyncClient,
+) -> Dict[str, Any]:
+    """
+    Generic helper for fal.ai API calls.
+    
+    Args:
+        endpoint: The fal.ai endpoint (e.g., "fal-ai/qwen-image")
+        arguments: Dictionary of arguments to pass to the API
+        client: httpx client (unused but kept for consistency with wavespeed pattern)
+    
+    Returns:
+        Transformed result dictionary with 'output_url' key
+    """
+    logger.info(f"Calling fal.ai endpoint: {endpoint}")
+    logger.info(f"Arguments: {json.dumps(arguments, default=str)[:500]}...")
+    
+    def on_queue_update(update):
+        if isinstance(update, fal_client.InProgress):
+            for log in update.logs:
+                logger.info(f"fal.ai: {log['message']}")
+    
+    # Run the blocking fal_client.subscribe in a thread pool
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: fal_client.subscribe(
+            endpoint,
+            arguments=arguments,
+            with_logs=True,
+            on_queue_update=on_queue_update,
+        )
+    )
+    
+    logger.info(f"fal.ai result: {result}")
+    
+    # Transform fal.ai result format to expected format
+    # fal.ai typically returns: {'image': {'url': '...', 'width': ..., 'height': ...}, ...}
+    # Or for multiple images: {'images': [{'url': '...', ...}, ...], ...}
+    # We need: {'output_url': '...'}
+    
+    if isinstance(result, dict):
+        # Handle single image response
+        if 'image' in result:
+            image_data = result['image']
+            if isinstance(image_data, dict) and 'url' in image_data:
+                return {
+                    'output_url': image_data['url'],
+                    'width': image_data.get('width'),
+                    'height': image_data.get('height'),
+                    'seed': result.get('seed'),
+                    'content_type': image_data.get('content_type')
+                }
+        
+        # Handle multiple images response (take first)
+        if 'images' in result and result['images']:
+            image_data = result['images'][0]
+            if isinstance(image_data, dict) and 'url' in image_data:
+                return {
+                    'output_url': image_data['url'],
+                    'width': image_data.get('width'),
+                    'height': image_data.get('height'),
+                    'seed': result.get('seed'),
+                    'content_type': image_data.get('content_type'),
+                    'all_images': [img.get('url') for img in result['images'] if img.get('url')]
+                }
+        
+        # Handle direct URL response
+        if 'url' in result:
+            return {
+                'output_url': result['url'],
+                'width': result.get('width'),
+                'height': result.get('height'),
+                'seed': result.get('seed'),
+            }
+    
+    # Fallback if format is unexpected
+    logger.warning(f"Unexpected fal.ai result format, returning as-is: {result}")
+    return result
+
+
+def build_fal_lora_list(params: Dict[str, Any]) -> list:
+    """
+    Build a list of LoRA configurations from task params.
+    
+    Supports multiple input formats:
+    - params["loras"]: list of {"path": ..., "scale": ...} or {"url": ..., "strength": ...}
+    - params["additional_loras"]: dict of {path: scale, ...}
+    
+    Returns:
+        List of LoRA configs in fal.ai format: [{"path": ..., "scale": ...}, ...]
+    """
+    loras = []
+    
+    # Handle list format
+    loras_list = params.get("loras", [])
+    for lora in loras_list:
+        if isinstance(lora, dict):
+            lora_path = lora.get("path") or lora.get("url", "")
+            lora_scale = lora.get("scale", lora.get("strength", 1.0))
+            if lora_path:
+                loras.append({"path": lora_path, "scale": float(lora_scale)})
+    
+    # Handle dict format (additional_loras)
+    additional_loras = params.get("additional_loras", {})
+    if isinstance(additional_loras, dict):
+        for lora_path, scale in additional_loras.items():
+            loras.append({"path": lora_path, "scale": float(scale)})
+    
+    return loras
+
+
 def normalize_resolution(resolution: str, min_dimension: int = 512, max_dimension: int = 1200) -> Optional[str]:
     """
     Normalize a resolution string to fit within min/max dimension constraints.
@@ -918,10 +1032,68 @@ async def process_api_task(task: Dict[str, Any], client: httpx.AsyncClient) -> D
         except Exception as e:
             logger.error(f"fal.ai API call failed: {e}")
             raise Exception(f"fal.ai upscale failed: {str(e)}")
+    
+    elif task_type in ("qwen_image", "qwen_image_2512", "z_image_turbo"):
+        # fal.ai image generation models with optional LoRA support
+        # Maps task_type to fal.ai endpoint base path
+        FALAI_IMAGE_MODELS = {
+            "qwen_image": "fal-ai/qwen-image",
+            "qwen_image_2512": "fal-ai/qwen-image-2512",
+            "z_image_turbo": "fal-ai/z-image/turbo",
+        }
+        
+        endpoint = FALAI_IMAGE_MODELS[task_type]
+        logger.info(f"Processing {task_type} task via fal.ai API")
+        logger.info(f"Using endpoint: {endpoint}")
+        
+        # Build LoRA list from params (same format as qwen_image_style)
+        # Supports: loras=[{"path": ..., "scale": ...}] or additional_loras={path: scale}
+        loras = build_fal_lora_list(params)
+        if loras:
+            logger.info(f"Including {len(loras)} LoRAs in request")
+        
+        # Build arguments - following similar naming to qwen_image_style
+        fal_args = {
+            "prompt": params.get("prompt", ""),
+            "seed": params.get("seed", -1),
+        }
+        
+        # Add size/resolution if provided
+        # fal.ai accepts either preset strings or {"width": x, "height": y}
+        resolution = params.get("resolution", "")
+        if resolution:
+            # Parse resolution string like "512x512" or "1920*1080"
+            parts = resolution.replace("*", "x").split("x")
+            if len(parts) == 2:
+                try:
+                    width = int(parts[0])
+                    height = int(parts[1])
+                    fal_args["image_size"] = {"width": width, "height": height}
+                    logger.info(f"Using resolution: {width}x{height}")
+                except ValueError:
+                    logger.warning(f"Could not parse resolution '{resolution}', using default")
+        
+        # Add negative prompt if provided
+        negative_prompt = params.get("negative_prompt", "")
+        if negative_prompt:
+            fal_args["negative_prompt"] = negative_prompt
+        
+        # Add LoRAs to args if provided
+        if loras:
+            fal_args["loras"] = loras
+        
+        try:
+            result = await call_fal_api(endpoint, fal_args, client)
+            result = await process_external_url_result(client, task_id, result)
+            logger.info(f"Processed {task_type} task via fal.ai API")
+            return result
+        except Exception as e:
+            logger.error(f"fal.ai API call failed: {e}")
+            raise Exception(f"fal.ai {task_type} failed: {str(e)}")
         
     else:
         # Unsupported task type
-        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v', 'animate_character', 'image-upscale', 'image_inpaint', 'annotated_image_edit'.")
+        raise Exception(f"Unsupported task type: {task_type}. Supported types: 'qwen_image_edit', 'qwen_image_style', 'wan_2_2_t2i', 'wan_2_2_i2v', 'animate_character', 'image-upscale', 'image_inpaint', 'annotated_image_edit', 'qwen_image', 'qwen_image_2512', 'z_image_turbo'.")
 
 
 async def worker_loop(index: int, worker_id: str, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> None:

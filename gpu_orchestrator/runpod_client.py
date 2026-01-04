@@ -114,7 +114,7 @@ def create_pod_and_wait(api_key: str, gpu_type_id: str, image_name: str, name: s
         "container_disk_in_gb": container_disk_in_gb,
         "min_vcpu_count": min_vcpu_count,
         "min_memory_in_gb": min_memory_in_gb,
-        "ports": "22/tcp",
+        "ports": "22/tcp,8888/http",
     }
 
     if network_volume_id:
